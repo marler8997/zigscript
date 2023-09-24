@@ -3,6 +3,12 @@ const std = @import("std");
 
 pub fn main() !void {
     try testError("@badBuiltin()", "unknown builtin");
+
+    try testError("@assert()", "@assert requires 1 argument but got 0");
+    try testError("@assert(0)", "@assert requires argument 1 to be of type bool but got number");
+    try testError("@assert(false)", "assert failed");
+    try testExpr("@assert(true)");
+
     try testError("@out()", "@out requires 1 argument but got 0");
     try testError("@out(0)", "@out requires argument 1 to be of type string but got number");
     try testExpr(
@@ -19,6 +25,7 @@ pub fn oom(e: error{OutOfMemory}) noreturn {
 }
 
 const TokenError = enum {
+    assert_failed,
     unknown_builtin,
     invalid_string_literal,
 };
@@ -39,6 +46,7 @@ const VmError = struct {
     pub fn getTestMsg(self: VmError) []const u8 {
         switch (self.kind) {
             .token => |token_error| switch (token_error) {
+                .assert_failed => return "assert failed",
                 .unknown_builtin => return "unknown builtin",
                 .invalid_string_literal => return "invalid string literal",
             },
@@ -79,6 +87,10 @@ const Vm = struct {
         return error.Vm;
     }
 
+    pub fn push_bool(self: *Vm, val: bool) void {
+        self.stack.append(self.allocator, .{ .@"bool" = val }) catch |e| oom(e);
+    }
+
     pub fn push_string_literal(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
         const token = self.src[loc.start..loc.end];
         const string = std.zig.string_literal.parseAlloc(self.allocator, token) catch |err| switch (err) {
@@ -112,6 +124,21 @@ const Vm = struct {
                 catch |err| std.debug.panic("@out failed with {s}", .{@errorName(err)});
             self.stack.items[0].deinit(self.allocator);
             self.stack.items.len = 0;
+        } else if (std.mem.eql(u8, name, "@assert")) {
+            if (self.stack.items.len != 1) return self.generalError(
+                loc.start,
+                "@assert requires 1 argument but got {}",
+                .{self.stack.items.len},
+            );
+            if (self.stack.items[0] != .@"bool") return self.generalError(
+                loc.start,
+                "@assert requires argument 1 to be of type bool but got {s}",
+                .{self.stack.items[0].error_desc()},
+            );
+            if (!self.stack.items[0].@"bool")
+                return self.tokenError(loc.start, .assert_failed);
+            self.stack.items[0].deinit(self.allocator);
+            self.stack.items.len = 0;
         } else {
             return self.tokenError(loc.start, .unknown_builtin);
         }
@@ -119,18 +146,21 @@ const Vm = struct {
 };
 
 const Value = union(enum) {
-    string: []const u8,
+    @"bool": bool,
     number: []const u8,
+    string: []const u8,
     pub fn deinit(self: Value, allocator: std.mem.Allocator) void {
         switch (self) {
-            .string => |s| allocator.free(s),
+            .@"bool" => {},
             .number => |n| allocator.free(n),
+            .string => |s| allocator.free(s),
         }
     }
     pub fn error_desc(self: Value) []const u8 {
         return switch (self) {
-            .string => "string",
+            .@"bool" => "bool",
             .number => "number",
+            .string => "string",
         };
     }
 };
@@ -250,6 +280,22 @@ fn Expr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
     if (token.tag == .r_paren) {
         return null;
     }
+
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK for now
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (token.tag == .identifier) {
+        const slice = src[token.loc.start..token.loc.end];
+        if (std.mem.eql(u8, slice, "false")) {
+            if (vm_opt) |vm| vm.push_bool(false);
+            return token.loc.end;
+        }
+        if (std.mem.eql(u8, slice, "true")) {
+            if (vm_opt) |vm| vm.push_bool(true);
+            return token.loc.end;
+        }
+    }
+
     std.debug.panic("todo: Expr token tag={s} src='{s}'", .{@tagName(token.tag), src[token.loc.start..token.loc.end]});
 }
 
