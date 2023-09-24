@@ -19,6 +19,19 @@ pub fn main() !void {
     try testExpr("@assert(false or false or true)");
     try testError("@assert(false or false or false)", "assert failed");
 
+    try testExpr("@assert(true and true)");
+    try testError("@assert(false and true)", "assert failed");
+    try testError("@assert(true and false)", "assert failed");
+    try testError("@assert(false and false)", "assert failed");
+    try testExpr("@assert(false and false or true)");
+    try testExpr("@assert(true or false and false)");
+    try testError("@assert(0 and true)", "'and' requires bool but got number");
+    try testError("@assert(true and 0)", "'and' requires bool but got number");
+    try testError(
+        \\@assert("hello" and "world")
+        , "'and' requires bool but got string"
+    );
+
     try testError("@out()", "@out requires 1 argument but got 0");
     try testError("@out(0)", "@out requires argument 1 to be of type string but got number");
     try testExpr(
@@ -154,25 +167,33 @@ const Vm = struct {
         }
     }
 
-    pub fn @"or"(self: *Vm, or_loc: usize) error{Vm}!void {
+    const BinaryBoolOp = enum {
+        @"or",
+        @"and",
+    };
+
+    pub fn binaryBoolOp(self: *Vm, op: BinaryBoolOp, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
         const first = self.stack.pop();
         defer first.deinit(self.allocator);
         const second = self.stack.pop();
         defer second.deinit(self.allocator);
         if (first != .@"bool") return self.generalError(
-            or_loc,
-            "'or' requires bool but got {s}",
-            .{first.error_desc()},
+            op_loc,
+            "'{s}' requires bool but got {s}",
+            .{@tagName(op), first.error_desc()},
         );
         if (second != .@"bool") return self.generalError(
-            or_loc,
-            "'or' requires bool but got {s}",
-            .{second.error_desc()},
+            op_loc,
+            "'{s}' requires bool but got {s}",
+            .{@tagName(op), second.error_desc()},
         );
         // we know we have capacity because we just popped off the old values
         self.stack.appendAssumeCapacity(.{
-            .bool = first.@"bool" or second.@"bool",
+            .bool = switch (op) {
+                .@"or" => first.@"bool" or second.@"bool",
+                .@"and" => first.@"bool" and second.@"bool",
+            },
         });
     }
 };
@@ -249,6 +270,7 @@ fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
     std.debug.panic("todo: token tag={s} src='{s}'", .{@tagName(first_token.tag), src[first_token.loc.start..first_token.loc.end]});
 }
 
+// FnCallArguments <- LPAREN ExprList RPAREN
 fn FnCallArguments(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
     const expr_list_start = blk: {
         const token = lex(src, start);
@@ -306,7 +328,7 @@ fn BoolOrExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
         const expr_end = try BoolAndExpr(src, token.loc.end, null) orelse break;
         if (vm_opt) |vm| {
             std.debug.assert(expr_end == try BoolAndExpr(src, token.loc.end, vm));
-            try vm.@"or"(token.loc.start);
+            try vm.binaryBoolOp(.@"or", token.loc.start);
         }
 
         off = expr_end;
@@ -316,6 +338,29 @@ fn BoolOrExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 
 // BoolAndExpr <- CompareExpr (KEYWORD_and CompareExpr)*
 fn BoolAndExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+
+    const first_expr_end = try CompareExpr(src, start, null) orelse return null;
+    if (vm_opt) |vm|
+        std.debug.assert(first_expr_end == try CompareExpr(src, start, vm));
+
+    var off = first_expr_end;
+    while (true) {
+        const token = lex(src, off);
+        if (token.tag != .keyword_and) break;
+
+        const expr_end = try CompareExpr(src, token.loc.end, null) orelse break;
+        if (vm_opt) |vm| {
+            std.debug.assert(expr_end == try CompareExpr(src, token.loc.end, vm));
+            try vm.binaryBoolOp(.@"and", token.loc.start);
+        }
+
+        off = expr_end;
+    }
+    return off;
+}
+
+// CompareExpr <- BitwiseExpr (CompareOp BitwiseExpr)?
+fn CompareExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
