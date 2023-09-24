@@ -16,6 +16,8 @@ pub fn main() !void {
         , "'or' requires bool but got string"
     );
     try testExpr("@assert(true or false)");
+    try testExpr("@assert(false or false or true)");
+    try testError("@assert(false or false or false)", "assert failed");
 
     try testError("@out()", "@out requires 1 argument but got 0");
     try testError("@out(0)", "@out requires argument 1 to be of type string but got number");
