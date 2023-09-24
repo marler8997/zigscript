@@ -9,6 +9,14 @@ pub fn main() !void {
     try testError("@assert(false)", "assert failed");
     try testExpr("@assert(true)");
 
+    try testError("@assert(0 or false)", "'or' requires bool but got number");
+    try testError("@assert(false or 0)", "'or' requires bool but got number");
+    try testError(
+        \\@assert("hello" or "world")
+        , "'or' requires bool but got string"
+    );
+    try testExpr("@assert(true or false)");
+
     try testError("@out()", "@out requires 1 argument but got 0");
     try testError("@out(0)", "@out requires argument 1 to be of type string but got number");
     try testExpr(
@@ -100,7 +108,7 @@ const Vm = struct {
         self.stack.append(self.allocator, .{ .string = string }) catch |e| oom(e);
     }
 
-    pub fn push_number_literal(self: *Vm, loc: std.zig.Token.Loc) !void {
+    pub fn push_number_literal(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
         self.stack.append(self.allocator, .{
             // TODO: escape the string literal
             .number = self.allocator.dupe(u8, self.src[loc.start..loc.end]) catch |e| oom(e),
@@ -142,6 +150,28 @@ const Vm = struct {
         } else {
             return self.tokenError(loc.start, .unknown_builtin);
         }
+    }
+
+    pub fn @"or"(self: *Vm, or_loc: usize) error{Vm}!void {
+        std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
+        const first = self.stack.pop();
+        defer first.deinit(self.allocator);
+        const second = self.stack.pop();
+        defer second.deinit(self.allocator);
+        if (first != .@"bool") return self.generalError(
+            or_loc,
+            "'or' requires bool but got {s}",
+            .{first.error_desc()},
+        );
+        if (second != .@"bool") return self.generalError(
+            or_loc,
+            "'or' requires bool but got {s}",
+            .{second.error_desc()},
+        );
+        // we know we have capacity because we just popped off the old values
+        self.stack.appendAssumeCapacity(.{
+            .bool = first.@"bool" or second.@"bool",
+        });
     }
 };
 
@@ -228,7 +258,7 @@ fn FnCallArguments(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
 
     const r_paren_token = lex(src, expr_list_end);
     if (r_paren_token.tag != .r_paren) {
-        //std.log.info("Not FnCallArguments, token={s}", .{@tagName(r_paren_token.tag)});
+        std.log.info("Not FnCallArguments, token={s}", .{@tagName(r_paren_token.tag)});
         return null;
     }
 
@@ -257,7 +287,33 @@ fn ExprList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
 }
 
 // Expr <- BoolOrExpr
-fn Expr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+const Expr = BoolOrExpr;
+
+// BoolOrExpr <- BoolAndExpr (KEYWORD_or BoolAndExpr)*
+fn BoolOrExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+
+    const first_expr_end = try BoolAndExpr(src, start, null) orelse return null;
+    if (vm_opt) |vm|
+        std.debug.assert(first_expr_end == try BoolAndExpr(src, start, vm));
+
+    var off = first_expr_end;
+    while (true) {
+        const token = lex(src, off);
+        if (token.tag != .keyword_or) break;
+
+        const expr_end = try BoolAndExpr(src, token.loc.end, null) orelse break;
+        if (vm_opt) |vm| {
+            std.debug.assert(expr_end == try BoolAndExpr(src, token.loc.end, vm));
+            try vm.@"or"(token.loc.start);
+        }
+
+        off = expr_end;
+    }
+    return off;
+}
+
+// BoolAndExpr <- CompareExpr (KEYWORD_and CompareExpr)*
+fn BoolAndExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
