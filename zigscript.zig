@@ -4,16 +4,17 @@ const std = @import("std");
 pub fn main() !void {
     try testError("@badBuiltin()", "unknown builtin");
 
-    try testError("@assert()", "@assert requires 1 argument but got 0");
-    try testError("@assert(0)", "@assert requires argument 1 to be of type bool but got number");
+    try testError("@assert()", "expected 1 argument(s), found 0");
+    try testError("@assert(0, 0)", "expected 1 argument(s), found 2");
+    try testError("@assert(0)", "expected type 'bool', found 'number'");
     try testError("@assert(false)", "assert failed");
     try testExpr("@assert(true)");
 
-    try testError("@assert(0 or false)", "'or' requires bool but got number");
-    try testError("@assert(false or 0)", "'or' requires bool but got number");
+    try testError("@assert(0 or false)", "expected type 'bool', found 'number'");
+    try testError("@assert(false or 0)", "expected type 'bool', found 'number'");
     try testError(
         \\@assert("hello" or "world")
-        , "'or' requires bool but got string"
+        , "expected type 'bool', found 'string'"
     );
     try testExpr("@assert(true or false)");
     try testExpr("@assert(false or false or true)");
@@ -25,15 +26,15 @@ pub fn main() !void {
     try testError("@assert(false and false)", "assert failed");
     try testExpr("@assert(false and false or true)");
     try testExpr("@assert(true or false and false)");
-    try testError("@assert(0 and true)", "'and' requires bool but got number");
-    try testError("@assert(true and 0)", "'and' requires bool but got number");
+    try testError("@assert(0 and true)", "expected type 'bool', found 'number'");
+    try testError("@assert(true and 0)", "expected type 'bool', found 'number'");
     try testError(
         \\@assert("hello" and "world")
-        , "'and' requires bool but got string"
+        , "expected type 'bool', found 'string'",
     );
 
-    try testError("@out()", "@out requires 1 argument but got 0");
-    try testError("@out(0)", "@out requires argument 1 to be of type string but got number");
+    try testError("@out()", "expected 1 argument(s), found 0");
+    try testError("@out(0)", "expected type 'string', found 'number'");
     try testExpr(
         \\@out("Hello, World!\n")
     );
@@ -130,38 +131,38 @@ const Vm = struct {
         }) catch |e| oom(e);
     }
 
-    pub fn call_builtin(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
+    fn enforceArgCount(self: *Vm, loc: usize, count: usize) error{Vm}!void {
+        if (self.stack.items.len != count) return self.generalError(
+            loc,
+            "expected {} argument(s), found {}",
+            .{count, self.stack.items.len},
+        );
+    }
+
+    fn popArg(self: *Vm, loc: usize, value_type: ValueType) error{Vm}!Value {
+        std.debug.assert(self.stack.items.len > 0);
+        const actual_type: ValueType = self.stack.items[self.stack.items.len - 1] ;
+        if (actual_type != value_type) return self.generalError(
+            loc,
+            "expected type '{s}', found '{s}'",
+            .{ value_type.error_desc(), actual_type.error_desc() },
+        );
+        return self.stack.pop();
+    }
+
+    pub fn callBuiltin(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
         const name = self.src[loc.start..loc.end];
         if (std.mem.eql(u8, name, "@out")) {
-            if (self.stack.items.len != 1) return self.generalError(
-                loc.start,
-                "@out requires 1 argument but got {}",
-                .{self.stack.items.len},
-            );
-            if (self.stack.items[0] != .string) return self.generalError(
-                loc.start,
-                "@out requires argument 1 to be of type string but got {s}",
-                .{self.stack.items[0].error_desc()},
-            );
-            std.io.getStdOut().writer().writeAll(self.stack.items[0].string)
+            try self.enforceArgCount(loc.start, 1);
+            const msg = try self.popArg(loc.start, .string);
+            defer msg.deinit(self.allocator);
+            std.io.getStdOut().writer().writeAll(msg.string)
                 catch |err| std.debug.panic("@out failed with {s}", .{@errorName(err)});
-            self.stack.items[0].deinit(self.allocator);
-            self.stack.items.len = 0;
         } else if (std.mem.eql(u8, name, "@assert")) {
-            if (self.stack.items.len != 1) return self.generalError(
-                loc.start,
-                "@assert requires 1 argument but got {}",
-                .{self.stack.items.len},
-            );
-            if (self.stack.items[0] != .@"bool") return self.generalError(
-                loc.start,
-                "@assert requires argument 1 to be of type bool but got {s}",
-                .{self.stack.items[0].error_desc()},
-            );
-            if (!self.stack.items[0].@"bool")
+            try self.enforceArgCount(loc.start, 1);
+            const value = try self.popArg(loc.start, .@"bool");
+            if (!value.@"bool")
                 return self.tokenError(loc.start, .assert_failed);
-            self.stack.items[0].deinit(self.allocator);
-            self.stack.items.len = 0;
         } else {
             return self.tokenError(loc.start, .unknown_builtin);
         }
@@ -174,20 +175,8 @@ const Vm = struct {
 
     pub fn binaryBoolOp(self: *Vm, op: BinaryBoolOp, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
-        const first = self.stack.pop();
-        defer first.deinit(self.allocator);
-        const second = self.stack.pop();
-        defer second.deinit(self.allocator);
-        if (first != .@"bool") return self.generalError(
-            op_loc,
-            "'{s}' requires bool but got {s}",
-            .{@tagName(op), first.error_desc()},
-        );
-        if (second != .@"bool") return self.generalError(
-            op_loc,
-            "'{s}' requires bool but got {s}",
-            .{@tagName(op), second.error_desc()},
-        );
+        const first = try self.popArg(op_loc, .@"bool");
+        const second = try self.popArg(op_loc, .@"bool");
         // we know we have capacity because we just popped off the old values
         self.stack.appendAssumeCapacity(.{
             .bool = switch (op) {
@@ -198,7 +187,19 @@ const Vm = struct {
     }
 };
 
-const Value = union(enum) {
+const ValueType = enum {
+    @"bool",
+    number,
+    string,
+    pub fn error_desc(self: ValueType) []const u8 {
+        return switch (self) {
+            .@"bool" => "bool",
+            .number => "number",
+            .string => "string",
+        };
+    }
+};
+const Value = union(ValueType) {
     @"bool": bool,
     number: []const u8,
     string: []const u8,
@@ -210,11 +211,7 @@ const Value = union(enum) {
         }
     }
     pub fn error_desc(self: Value) []const u8 {
-        return switch (self) {
-            .@"bool" => "bool",
-            .number => "number",
-            .string => "string",
-        };
+        return @as(ValueType, self).error_desc();
     }
 };
 
@@ -262,7 +259,7 @@ fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
             if (vm_opt) |vm| {
                 const new_end = try FnCallArguments(src, first_token.loc.end, vm);
                 std.debug.assert(new_end == fn_call_end);
-                try vm.call_builtin(first_token.loc);
+                try vm.callBuiltin(first_token.loc);
             }
             return fn_call_end;
         }
