@@ -32,6 +32,14 @@ pub fn main() !void {
         \\@assert("hello" and "world")
         , "expected type 'bool', found 'string'",
     );
+    try testExpr("@assert(false == false)");
+    try testExpr("@assert(false != true)");
+    try testError("@assert(false == 0)", "incompatible types: 'bool' and 'number'");
+    try testError("@assert(0 == false)", "incompatible types: 'number' and 'bool'");
+    try testError("@assert(false < true)", "operator < not allowed for type 'bool'");
+    try testError("@assert(false > true)", "operator > not allowed for type 'bool'");
+    try testError("@assert(false <= true)", "operator <= not allowed for type 'bool'");
+    try testError("@assert(false >= true)", "operator >= not allowed for type 'bool'");
 
     try testError("@out()", "expected 1 argument(s), found 0");
     try testError("@out(0)", "expected type 'string', found 'number'");
@@ -112,7 +120,7 @@ const Vm = struct {
     }
 
     pub fn push_bool(self: *Vm, val: bool) void {
-        self.stack.append(self.allocator, .{ .@"bool" = val }) catch |e| oom(e);
+        self.stack.append(self.allocator, .{ .bool = val }) catch |e| oom(e);
     }
 
     pub fn push_string_literal(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
@@ -160,8 +168,8 @@ const Vm = struct {
                 catch |err| std.debug.panic("@out failed with {s}", .{@errorName(err)});
         } else if (std.mem.eql(u8, name, "@assert")) {
             try self.enforceArgCount(loc.start, 1);
-            const value = try self.popArg(loc.start, .@"bool");
-            if (!value.@"bool")
+            const value = try self.popArg(loc.start, .bool);
+            if (!value.bool)
                 return self.tokenError(loc.start, .assert_failed);
         } else {
             return self.tokenError(loc.start, .unknown_builtin);
@@ -175,37 +183,84 @@ const Vm = struct {
 
     pub fn binaryBoolOp(self: *Vm, op: BinaryBoolOp, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
-        const first = try self.popArg(op_loc, .@"bool");
-        const second = try self.popArg(op_loc, .@"bool");
+        const first = try self.popArg(op_loc, .bool);
+        const second = try self.popArg(op_loc, .bool);
         // we know we have capacity because we just popped off the old values
         self.stack.appendAssumeCapacity(.{
             .bool = switch (op) {
-                .@"or" => first.@"bool" or second.@"bool",
-                .@"and" => first.@"bool" and second.@"bool",
+                .@"or" => first.bool or second.bool,
+                .@"and" => first.bool and second.bool,
             },
         });
+    }
+    pub fn binaryCompareOp(self: *Vm, op: CompareOp, op_loc: usize) error{Vm}!void {
+        std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
+        const rhs = self.stack.pop();
+        defer rhs.deinit(self.allocator);
+        const lhs = self.stack.pop();
+        defer lhs.deinit(self.allocator);
+        // we know we have capacity because we just popped off the old values
+        self.stack.appendAssumeCapacity(.{
+            .bool = switch (lhs) {
+                .bool => |v| try self.compareBool(op, op_loc, v, rhs),
+                .number => |v| try self.compareNumber(op, op_loc, v, rhs),
+                else => @panic("todo"),
+            }
+        });
+    }
+
+    pub fn compareBool(self: *Vm, op: CompareOp, op_loc: usize, lhs: bool, rhs_val: Value) error{Vm}!bool {
+        const rhs = switch (rhs_val) {
+            .bool => |rhs| rhs,
+            else => |rhs_type| return self.generalError(
+                op_loc, "incompatible types: 'bool' and '{s}'", .{rhs_type.error_desc()},
+            ),
+        };
+        return switch (op) {
+            .equal => lhs == rhs,
+            .not_equal => lhs != rhs,
+            else => self.generalError(
+                op_loc, "operator {s} not allowed for type 'bool'", .{op.str()},
+            ),
+        };
+    }
+
+    pub fn compareNumber(self: *Vm, op: CompareOp, op_loc: usize, lhs: []const u8, rhs_val: Value) error{Vm}!bool {
+        const rhs = switch (rhs_val) {
+            //.bool => |rhs| rhs,
+            else => |rhs_type| return self.generalError(
+                op_loc, "incompatible types: 'number' and '{s}'", .{rhs_type.error_desc()},
+            ),
+        };
+        _ = lhs;
+        _ = rhs;
+        return switch (op) {
+            //.equal_equal => lhs == rhs,
+            //.bang_equal => lhs != rhs,
+            else => @panic("here"),
+        };
     }
 };
 
 const ValueType = enum {
-    @"bool",
+    bool,
     number,
     string,
     pub fn error_desc(self: ValueType) []const u8 {
         return switch (self) {
-            .@"bool" => "bool",
+            .bool => "bool",
             .number => "number",
             .string => "string",
         };
     }
 };
 const Value = union(ValueType) {
-    @"bool": bool,
+    bool: bool,
     number: []const u8,
     string: []const u8,
     pub fn deinit(self: Value, allocator: std.mem.Allocator) void {
         switch (self) {
-            .@"bool" => {},
+            .bool => {},
             .number => |n| allocator.free(n),
             .string => |s| allocator.free(s),
         }
@@ -219,6 +274,36 @@ fn ErrorOr(comptime T: type) type {
     return union(enum) {
         ok: T,
         err: []u8,
+    };
+}
+
+const CompareOp = enum {
+    equal,
+    not_equal,
+    less_than,
+    greater_than,
+    less_than_equal,
+    greater_than_equal,
+    pub fn str(self: CompareOp) []const u8 {
+        return switch (self) {
+            .equal => "==",
+            .not_equal => "!=",
+            .less_than => "<",
+            .greater_than => ">",
+            .less_than_equal => "<=",
+            .greater_than_equal => ">=",
+        };
+    }
+};
+fn asCompareOp(token: std.zig.Token) ?CompareOp {
+    return switch (token.tag) {
+        .equal_equal => .equal,
+        .bang_equal => .not_equal,
+        .angle_bracket_left => .less_than,
+        .angle_bracket_right => .greater_than,
+        .angle_bracket_left_equal => .less_than_equal,
+        .angle_bracket_right_equal => .greater_than_equal,
+        else => return null,
     };
 }
 
@@ -358,6 +443,28 @@ fn BoolAndExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 
 // CompareExpr <- BitwiseExpr (CompareOp BitwiseExpr)?
 fn CompareExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const first_expr_end = try BitwiseExpr(src, start, null) orelse return null;
+    if (vm_opt) |vm|
+        std.debug.assert(first_expr_end == try BitwiseExpr(src, start, vm));
+
+    var off = first_expr_end;
+    while (true) {
+        const token = lex(src, off);
+        const compare_op = asCompareOp(token) orelse break;
+
+        const expr_end = try BitwiseExpr(src, token.loc.end, null) orelse break;
+        if (vm_opt) |vm| {
+            std.debug.assert(expr_end == try BitwiseExpr(src, token.loc.end, vm));
+            try vm.binaryCompareOp(compare_op, token.loc.start);
+        }
+
+        off = expr_end;
+    }
+    return off;
+}
+
+// BitwiseExpr <- BitShiftExpr (BitwiseOp BitShiftExpr)*
+fn BitwiseExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
