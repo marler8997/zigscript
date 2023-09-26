@@ -41,6 +41,32 @@ pub fn main() !void {
     try testError("@assert(false <= true)", "operator <= not allowed for type 'bool'");
     try testError("@assert(false >= true)", "operator >= not allowed for type 'bool'");
 
+    try testExpr("@assert(0 == 0)");
+    try testExpr("@assert(9 == 9)");
+    try testExpr("@assert(9 == 0x9)");
+    try testExpr("@assert(7 == 0o7)");
+    try testExpr("@assert(10 == 0xa)");
+    try testExpr("@assert(0b1 == 1)");
+    try testExpr("@assert(0b1010_0110 == 0xa6)");
+    try testError(
+        \\@assert(0 == "Hello")
+        , "incompatible types: 'number' and 'string'",
+    );
+    try testError("@assert(0x0)", "expected type 'bool', found 'number'");
+    try testError("@assert(0o0)", "expected type 'bool', found 'number'");
+    try testError("@assert(0b0)", "expected type 'bool', found 'number'");
+    try testError("@assert(1_000_000)", "expected type 'bool', found 'number'");
+    try testExpr("@assert(0 != 1)");
+    try testError("@assert(0 != 0)", "assert failed");
+    try testExpr("@assert(0 < 1)");
+    try testError("@assert(0 > 1)", "assert failed");
+    try testExpr("@assert(1 > 0)");
+    try testError("@assert(0 > 1)", "assert failed");
+    try testExpr("@assert(0 <= 1)");
+    try testError("@assert(0 >= 1)", "assert failed");
+    try testExpr("@assert(1 >= 0)");
+    try testError("@assert(0 >= 1)", "assert failed");
+
     try testError("@out()", "expected 1 argument(s), found 0");
     try testError("@out(0)", "expected type 'string', found 'number'");
     try testExpr(
@@ -133,9 +159,28 @@ const Vm = struct {
     }
 
     pub fn push_number_literal(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
+        var num = std.math.big.int.Managed.init(self.allocator) catch |e| oom(e);
+        errdefer num.deinit();
+
+        const literal = self.src[loc.start..loc.end];
+        const args: struct { base: u8, str: []const u8 } = blk: {
+            if (std.mem.startsWith(u8, literal, "0x"))
+                break :blk .{ .base = 16, .str = literal[2..] };
+            if (std.mem.startsWith(u8, literal, "0o"))
+                break :blk .{ .base = 8, .str = literal[2..] };
+            if (std.mem.startsWith(u8, literal, "0b"))
+                break :blk .{ .base = 2, .str = literal[2..] };
+            break :blk .{ .base = 10, .str = literal };
+        };
+        num.setString(args.base, args.str) catch |err| switch (err) {
+            error.OutOfMemory => |e| oom(e),
+            error.InvalidBase, error.InvalidCharacter => |e| return self.generalError(
+                loc.start, "unable to convert integer literal '{s}' to bigint with {s}", .{literal, @errorName(e)}
+            ),
+        };
+
         self.stack.append(self.allocator, .{
-            // TODO: escape the string literal
-            .number = self.allocator.dupe(u8, self.src[loc.start..loc.end]) catch |e| oom(e),
+            .number = num.toMutable(),
         }) catch |e| oom(e);
     }
 
@@ -193,7 +238,7 @@ const Vm = struct {
             },
         });
     }
-    pub fn binaryCompareOp(self: *Vm, op: CompareOp, op_loc: usize) error{Vm}!void {
+    pub fn binaryCompareOp(self: *Vm, op: std.math.CompareOperator, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
         const rhs = self.stack.pop();
         defer rhs.deinit(self.allocator);
@@ -209,7 +254,7 @@ const Vm = struct {
         });
     }
 
-    pub fn compareBool(self: *Vm, op: CompareOp, op_loc: usize, lhs: bool, rhs_val: Value) error{Vm}!bool {
+    pub fn compareBool(self: *Vm, op: std.math.CompareOperator, op_loc: usize, lhs: bool, rhs_val: Value) error{Vm}!bool {
         const rhs = switch (rhs_val) {
             .bool => |rhs| rhs,
             else => |rhs_type| return self.generalError(
@@ -217,28 +262,22 @@ const Vm = struct {
             ),
         };
         return switch (op) {
-            .equal => lhs == rhs,
-            .not_equal => lhs != rhs,
+            .eq => lhs == rhs,
+            .neq => lhs != rhs,
             else => self.generalError(
-                op_loc, "operator {s} not allowed for type 'bool'", .{op.str()},
+                op_loc, "operator {s} not allowed for type 'bool'", .{compareOpStr(op)},
             ),
         };
     }
 
-    pub fn compareNumber(self: *Vm, op: CompareOp, op_loc: usize, lhs: []const u8, rhs_val: Value) error{Vm}!bool {
+    pub fn compareNumber(self: *Vm, op: std.math.CompareOperator, op_loc: usize, lhs: std.math.big.int.Mutable, rhs_val: Value) error{Vm}!bool {
         const rhs = switch (rhs_val) {
-            //.bool => |rhs| rhs,
+            .number => |rhs| rhs,
             else => |rhs_type| return self.generalError(
                 op_loc, "incompatible types: 'number' and '{s}'", .{rhs_type.error_desc()},
             ),
         };
-        _ = lhs;
-        _ = rhs;
-        return switch (op) {
-            //.equal_equal => lhs == rhs,
-            //.bang_equal => lhs != rhs,
-            else => @panic("here"),
-        };
+        return lhs.toConst().order(rhs.toConst()).compare(op);
     }
 };
 
@@ -254,14 +293,20 @@ const ValueType = enum {
         };
     }
 };
+
 const Value = union(ValueType) {
     bool: bool,
-    number: []const u8,
+    number: std.math.big.int.Mutable,
     string: []const u8,
+
+    pub fn deinitAndInvalidate(self: *Value) void {
+        self.deinit();
+        self.* = undefined;
+    }
     pub fn deinit(self: Value, allocator: std.mem.Allocator) void {
         switch (self) {
             .bool => {},
-            .number => |n| allocator.free(n),
+            .number => |n| allocator.free(n.limbs),
             .string => |s| allocator.free(s),
         }
     }
@@ -277,32 +322,24 @@ fn ErrorOr(comptime T: type) type {
     };
 }
 
-const CompareOp = enum {
-    equal,
-    not_equal,
-    less_than,
-    greater_than,
-    less_than_equal,
-    greater_than_equal,
-    pub fn str(self: CompareOp) []const u8 {
-        return switch (self) {
-            .equal => "==",
-            .not_equal => "!=",
-            .less_than => "<",
-            .greater_than => ">",
-            .less_than_equal => "<=",
-            .greater_than_equal => ">=",
-        };
-    }
-};
-fn asCompareOp(token: std.zig.Token) ?CompareOp {
+fn compareOpStr(op: std.math.CompareOperator) []const u8 {
+    return switch (op) {
+        .lt => "<",
+        .lte => "<=",
+        .eq => "==",
+        .gte => ">=",
+        .gt => ">",
+        .neq => "!=",
+    };
+}
+fn asCompareOp(token: std.zig.Token) ?std.math.CompareOperator {
     return switch (token.tag) {
-        .equal_equal => .equal,
-        .bang_equal => .not_equal,
-        .angle_bracket_left => .less_than,
-        .angle_bracket_right => .greater_than,
-        .angle_bracket_left_equal => .less_than_equal,
-        .angle_bracket_right_equal => .greater_than_equal,
+        .equal_equal => .eq,
+        .bang_equal => .neq,
+        .angle_bracket_left => .lt,
+        .angle_bracket_right => .gt,
+        .angle_bracket_left_equal => .lte,
+        .angle_bracket_right_equal => .gte,
         else => return null,
     };
 }
