@@ -50,7 +50,7 @@ pub fn main() !void {
     try testExpr("@assert(0b1010_0110 == 0xa6)");
     try testError(
         \\@assert(0 == "Hello")
-        , "incompatible types: 'number' and 'string'",
+        , "cannot compare strings with ==",
     );
     try testError("@assert(0x0)", "expected type 'bool', found 'number'");
     try testError("@assert(0o0)", "expected type 'bool', found 'number'");
@@ -66,6 +66,31 @@ pub fn main() !void {
     try testError("@assert(0 >= 1)", "assert failed");
     try testExpr("@assert(1 >= 0)");
     try testError("@assert(0 >= 1)", "assert failed");
+
+    try testError(
+        \\@assert("a" == "a")
+        , "cannot compare strings with =="
+    );
+    try testError(
+        \\@assert("a" != "a")
+        , "cannot compare strings with !="
+    );
+    try testError(
+        \\@assert("a" < "a")
+        , "cannot compare strings with <"
+    );
+    try testError(
+        \\@assert("a" <= "a")
+        , "cannot compare strings with <="
+    );
+    try testError(
+        \\@assert("a" > "a")
+        , "cannot compare strings with >"
+    );
+    try testError(
+        \\@assert("a" >= "a")
+        , "cannot compare strings with >="
+    );
 
     try testError("@out()", "expected 1 argument(s), found 0");
     try testError("@out(0)", "expected type 'string', found 'number'");
@@ -244,12 +269,16 @@ const Vm = struct {
         defer rhs.deinit(self.allocator);
         const lhs = self.stack.pop();
         defer lhs.deinit(self.allocator);
+
+        if (lhs == .string or rhs == .string)
+            return self.generalError(op_loc, "cannot compare strings with {s}", .{compareOpStr(op)});
+
         // we know we have capacity because we just popped off the old values
         self.stack.appendAssumeCapacity(.{
             .bool = switch (lhs) {
                 .bool => |v| try self.compareBool(op, op_loc, v, rhs),
                 .number => |v| try self.compareNumber(op, op_loc, v, rhs),
-                else => @panic("todo"),
+                .string => unreachable,
             }
         });
     }
@@ -257,6 +286,7 @@ const Vm = struct {
     pub fn compareBool(self: *Vm, op: std.math.CompareOperator, op_loc: usize, lhs: bool, rhs_val: Value) error{Vm}!bool {
         const rhs = switch (rhs_val) {
             .bool => |rhs| rhs,
+            .string => unreachable,
             else => |rhs_type| return self.generalError(
                 op_loc, "incompatible types: 'bool' and '{s}'", .{rhs_type.error_desc()},
             ),
@@ -273,6 +303,7 @@ const Vm = struct {
     pub fn compareNumber(self: *Vm, op: std.math.CompareOperator, op_loc: usize, lhs: std.math.big.int.Mutable, rhs_val: Value) error{Vm}!bool {
         const rhs = switch (rhs_val) {
             .number => |rhs| rhs,
+            .string => unreachable,
             else => |rhs_type| return self.generalError(
                 op_loc, "incompatible types: 'number' and '{s}'", .{rhs_type.error_desc()},
             ),
