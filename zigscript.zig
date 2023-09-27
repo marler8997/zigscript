@@ -127,6 +127,10 @@ pub fn main() !void {
     try testExpr("@assert(14 == 21 - 7)");
     try testExpr("@assert(1 - 1 == 0)");
     try testExpr("@assert(0 - 0 == 0)");
+    try testError("@assert(0 +% 0)", "zigscript doesn't support the +% operator");
+    try testError("@assert(0 -% 0)", "zigscript doesn't support the -% operator");
+    try testError("@assert(0 +| 0)", "zigscript doesn't support the +| operator");
+    try testError("@assert(0 -| 0)", "zigscript doesn't support the -| operator");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -383,7 +387,13 @@ const Vm = struct {
                             m.sub(lhs_num.toConst(), rhs_num.toConst());
                             result.setMetadata(m.positive, m.len);
                         },
-                        else => @panic("todo"),
+                        .add_wrap, .sub_wrap,
+                        .add_sat, .sub_sat,
+                        => return self.generalError(
+                            op_loc,
+                            "zigscript doesn't support the {s} operator",
+                            .{ op.str() },
+                        ),
                     }
                     self.stack.appendAssumeCapacity(.{ .number = result.toMutable() });
                     return;
@@ -472,6 +482,17 @@ const AdditionOp = enum {
     sub_wrap,
     add_sat,
     sub_sat,
+    pub fn str(self: AdditionOp) []const u8 {
+        return switch (self) {
+            .concat => "++",
+            .add => "+",
+            .sub => "-",
+            .add_wrap => "+%",
+            .sub_wrap => "-%",
+            .add_sat => "+|",
+            .sub_sat => "-|",
+        };
+    }
 };
 fn asAdditionOp(token: std.zig.Token) ?AdditionOp {
     return switch (token.tag) {
