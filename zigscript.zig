@@ -141,6 +141,13 @@ pub fn main() !void {
     try testExpr("@assert(1 * 1 == 1)");
     try testExpr("@assert(1 * 123 == 123)");
     try testExpr("@assert(89 * 76 == 6764)");
+
+    try testExpr("@assert(!false)");
+    try testError("@assert(!true)", "assert failed");
+    try testExpr("@assert(!!true)");
+    try testError("@assert(!!!true)", "assert failed");
+    try testError("@assert(!0)", "expected type 'bool' found 'number'");
+    try testError("@assert(!\"a\")", "expected type 'bool' found 'string'");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -446,6 +453,21 @@ const Vm = struct {
             },
         }
     }
+
+    pub fn applyPrefixOp(self: *Vm, op: PrefixOp, op_loc: usize) error{Vm}!void {
+        std.debug.assert(self.stack.items.len >= 1); // should be guaranteed
+        const value = self.stack.pop();
+        defer value.deinit(self.allocator);
+
+        switch (op) {
+            .not => {
+                if (value != .bool) return self.generalError(
+                    op_loc, "expected type 'bool' found '{s}'", .{@tagName(value)}
+                );
+                self.stack.appendAssumeCapacity(.{ .bool = !value.bool });
+            }
+        }
+    }
 };
 
 const ValueType = enum {
@@ -565,6 +587,31 @@ fn asMultiplyOp(token: std.zig.Token) ?MultiplyOp {
         .asterisk_pipe => @panic("todo"),
         else => return null,
     };
+}
+
+const PrefixOp = enum {
+    not,
+};
+fn asPrefixOp(token: std.zig.Token) ?PrefixOp {
+    return switch (token.tag) {
+        .bang => .not,
+        .minus => @panic("todo"),
+        .tilde => @panic("todo"),
+        .minus_percent => @panic("todo"),
+        .ampersand => @panic("todo"),
+        .keyword_try => @panic("todo"),
+        .keyword_await => @panic("todo"),
+        else => return null,
+    };
+}
+fn applyPrefixOps(src: [:0]const u8, start: usize, op_count: u16, vm: *Vm) !void {
+    var off = start;
+    for (0 .. op_count) |_| {
+        const token = lex(src, off);
+        const op = asPrefixOp(token) orelse unreachable;
+        try vm.applyPrefixOp(op, token.loc.start);
+        off = token.loc.end;
+    }
 }
 
 fn lex(src: [:0]const u8, off: usize) std.zig.Token {
@@ -774,6 +821,27 @@ fn MultiplyExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize 
 
 // PrefixExpr <- PrefixOp* PrimaryExpr
 fn PrefixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+
+    var op_count: u16 = 0;
+    const prefix_end = blk: {
+        var off = start;
+        while (true) {
+            const token = lex(src, off);
+            _ = asPrefixOp(token) orelse break :blk off;
+            off = token.loc.end;
+            op_count += 1;
+        }
+    };
+
+    const expr_end = try PrimaryExpr(src, prefix_end, null) orelse return null;
+    if (vm_opt) |vm| {
+        std.debug.assert(expr_end == try PrimaryExpr(src, prefix_end, vm));
+        try applyPrefixOps(src, start, op_count, vm);
+    }
+    return expr_end;
+}
+
+fn PrimaryExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
