@@ -115,6 +115,20 @@ pub fn main() !void {
     try testError("@assert(false -% false)", "invalid operands to binary expression 'bool' and 'bool'");
     try testError("@assert(false +| false)", "invalid operands to binary expression 'bool' and 'bool'");
     try testError("@assert(false -| false)", "invalid operands to binary expression 'bool' and 'bool'");
+    try testError("@assert(false + \"a\")", "invalid operands to binary expression 'bool' and 'string'");
+    try testError("@assert(\"a\" + true)", "invalid operands to binary expression 'string' and 'bool'");
+    try testError("@assert(\"a\" + \"a\")", "invalid operands to binary expression 'string' and 'string'");
+
+    try testExpr("@assert(0 + 0 == 0)");
+    try testExpr("@assert(12 + 34 == 46)");
+    try testExpr("@assert(168 == 78 + 90)");
+    try testError("@assert(169 == 78 + 90)", "assert failed");
+    try testExpr("@assert(3 - 1 == 2)");
+    try testExpr("@assert(14 == 21 - 7)");
+    try testExpr("@assert(1 - 1 == 0)");
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // bug in std.math.big.int comparing positive and negative 0
+    //try testExpr("@assert(0 - 0 == 0)");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -343,13 +357,41 @@ const Vm = struct {
             return;
         }
 
-        if (lhs == .bool or rhs == .bool) return self.generalError(
+        switch (lhs) {
+            .bool => {},
+            .number => |lhs_num| switch (rhs) {
+                .bool => {},
+                .number => |rhs_num| {
+                    var result = std.math.big.int.Managed.init(self.allocator) catch |e| oom(e);
+                    errdefer result.deinit();
+                    switch (op) {
+                        .concat => unreachable,
+                        .add => {
+                            result.ensureAddCapacity(lhs_num.toConst(), rhs_num.toConst()) catch |e| oom(e);
+                            var m = result.toMutable();
+                            m.add(lhs_num.toConst(), rhs_num.toConst());
+                            result.setMetadata(m.positive, m.len);
+                        },
+                        .sub => {
+                            result.ensureCapacity(@max(lhs_num.len, rhs_num.len) + 1) catch |e| oom(e);
+                            var m = result.toMutable();
+                            m.sub(lhs_num.toConst(), rhs_num.toConst());
+                            result.setMetadata(m.positive, m.len);
+                        },
+                        else => @panic("todo"),
+                    }
+                    self.stack.appendAssumeCapacity(.{ .number = result.toMutable() });
+                    return;
+                },
+                .string => {},
+            },
+            .string => {},
+        }
+        return self.generalError(
             op_loc,
             "invalid operands to binary expression '{s}' and '{s}'",
             .{ lhs.error_desc(), rhs.error_desc() }
         );
-
-        @panic("todo");
     }
 };
 
