@@ -131,6 +131,16 @@ pub fn main() !void {
     try testError("@assert(0 -% 0)", "zigscript doesn't support the -% operator");
     try testError("@assert(0 +| 0)", "zigscript doesn't support the +| operator");
     try testError("@assert(0 -| 0)", "zigscript doesn't support the -| operator");
+
+    try testError("@assert(0 || 0)", "not implemented");
+    try testError("@assert(false * false)", "incompatible types: 'bool' and 'bool'");
+    try testError("@assert(\"a\" * \"b\")", "incompatible types: 'string' and 'string'");
+    try testExpr("@assert(0 * 0 == 0)");
+    try testExpr("@assert(0 * 9 == 0)");
+    try testExpr("@assert(99 * 0 == 0)");
+    try testExpr("@assert(1 * 1 == 1)");
+    try testExpr("@assert(1 * 123 == 123)");
+    try testExpr("@assert(89 * 76 == 6764)");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -138,6 +148,7 @@ pub fn oom(e: error{OutOfMemory}) noreturn {
 }
 
 const TokenError = enum {
+    not_implemented,
     assert_failed,
     unknown_builtin,
     invalid_string_literal,
@@ -159,6 +170,7 @@ const VmError = struct {
     pub fn getTestMsg(self: VmError) []const u8 {
         switch (self.kind) {
             .token => |token_error| switch (token_error) {
+                .not_implemented => return "not implemented",
                 .assert_failed => return "assert failed",
                 .unknown_builtin => return "unknown builtin",
                 .invalid_string_literal => return "invalid string literal",
@@ -408,6 +420,32 @@ const Vm = struct {
             .{ lhs.error_desc(), rhs.error_desc() }
         );
     }
+
+    pub fn multiplyOp(self: *Vm, op: MultiplyOp, op_loc: usize) error{Vm}!void {
+        std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
+        const rhs = self.stack.pop();
+        defer rhs.deinit(self.allocator);
+        const lhs = self.stack.pop();
+        defer lhs.deinit(self.allocator);
+
+        switch (op) {
+            .double_pipe => return self.tokenError(op_loc, .not_implemented),
+            .mul => {
+                if (lhs != .number or rhs != .number) return self.generalError(
+                    op_loc,
+                    "incompatible types: '{s}' and '{s}'",
+                    .{lhs.error_desc(), rhs.error_desc()},
+                );
+                var result = std.math.big.int.Managed.init(self.allocator) catch |e| oom(e);
+                errdefer result.deinit();
+                result.ensureMulCapacity(lhs.number.toConst(), rhs.number.toConst()) catch |e| oom(e);
+                var m = result.toMutable();
+                m.mulNoAlias(lhs.number.toConst(), rhs.number.toConst(), self.allocator);
+                result.setMetadata(m.positive, m.len);
+                self.stack.appendAssumeCapacity(.{ .number = result.toMutable() });
+            },
+        }
+    }
 };
 
 const ValueType = enum {
@@ -503,6 +541,28 @@ fn asAdditionOp(token: std.zig.Token) ?AdditionOp {
         .minus_percent => return .sub_wrap,
         .plus_pipe => return .add_sat,
         .minus_pipe => return .sub_sat,
+        else => return null,
+    };
+}
+
+const MultiplyOp = enum {
+    /// merges error sets or performs boolean OR
+    double_pipe,
+    mul,
+    pub fn str(self: MultiplyOp) []const u8 {
+        return switch (self) {
+        };
+    }
+};
+fn asMultiplyOp(token: std.zig.Token) ?MultiplyOp {
+    return switch (token.tag) {
+        .pipe_pipe => .double_pipe,
+        .asterisk => .mul,
+        .slash => @panic("todo"),
+        .percent => @panic("todo"),
+        .asterisk_asterisk => @panic("todo"),
+        .asterisk_percent => @panic("todo"),
+        .asterisk_pipe => @panic("todo"),
         else => return null,
     };
 }
@@ -668,6 +728,7 @@ const BitwiseExpr = BitShiftExpr; // TODO
 // BitShiftExpr <- AdditionExpr (BitShiftOp AdditionExpr)*
 const BitShiftExpr = AdditionExpr; // TODO
 
+// AdditionExpr <- MultiplyExpr (AdditionOp MultiplyExpr)*
 fn AdditionExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const first_expr_end = try MultiplyExpr(src, start, null) orelse return null;
     if (vm_opt) |vm|
@@ -689,7 +750,30 @@ fn AdditionExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize 
     return off;
 }
 
+// MultiplyExpr <- PrefixExpr (MultiplyOp PrefixExpr)*
 fn MultiplyExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const first_expr_end = try PrefixExpr(src, start, null) orelse return null;
+    if (vm_opt) |vm|
+        std.debug.assert(first_expr_end == try PrefixExpr(src, start, vm));
+
+    var off = first_expr_end;
+    while (true) {
+        const token = lex(src, off);
+        const op = asMultiplyOp(token) orelse break;
+
+        const expr_end = try PrefixExpr(src, token.loc.end, null) orelse break;
+        if (vm_opt) |vm| {
+            std.debug.assert(expr_end == try PrefixExpr(src, token.loc.end, vm));
+            try vm.multiplyOp(op, token.loc.start);
+        }
+
+        off = expr_end;
+    }
+    return off;
+}
+
+// PrefixExpr <- PrefixOp* PrimaryExpr
+fn PrefixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
