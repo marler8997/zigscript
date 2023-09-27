@@ -126,9 +126,7 @@ pub fn main() !void {
     try testExpr("@assert(3 - 1 == 2)");
     try testExpr("@assert(14 == 21 - 7)");
     try testExpr("@assert(1 - 1 == 0)");
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // bug in std.math.big.int comparing positive and negative 0
-    //try testExpr("@assert(0 - 0 == 0)");
+    try testExpr("@assert(0 - 0 == 0)");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -336,6 +334,13 @@ const Vm = struct {
                 op_loc, "incompatible types: 'number' and '{s}'", .{rhs_type.error_desc()},
             ),
         };
+        // workaround bug in std.math.big.int treating positive/negative 0 as different
+        switch (op) {
+            .lt, .gt, .neq => {},
+            .lte, .gte, .eq => {
+                if (lhs.eqlZero() and rhs.eqlZero()) return true;
+            },
+        }
         return lhs.toConst().order(rhs.toConst()).compare(op);
     }
 
