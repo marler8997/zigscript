@@ -856,7 +856,58 @@ fn PrefixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     return expr_end;
 }
 
+// PrimaryExpr
+//     <- AsmExpr
+//      / IfExpr
+//      / KEYWORD_break BreakLabel? Expr?
+//      / KEYWORD_comptime Expr
+//      / KEYWORD_nosuspend Expr
+//      / KEYWORD_continue BreakLabel?
+//      / KEYWORD_resume Expr
+//      / KEYWORD_return Expr?
+//      / BlockLabel? LoopExpr
+//      / Block
+//      / CurlySuffixExpr
 fn PrimaryExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const token = lex(src, start);
+
+    if (token.tag == .keyword_asm) {
+        @panic("AsmExpr not implemented");
+    } else if (token.tag == .keyword_if) {
+        @panic("IfExpr not implemented");
+    } else if (token.tag == .keyword_break) {
+        @panic("break PrimaryExpr not implemented");
+    } else if (token.tag == .keyword_nosuspend) {
+        @panic("nosuspend not implemented");
+    } else if (token.tag == .keyword_continue) {
+        @panic("continue not implemented");
+    } else if (token.tag == .keyword_resume) {
+        @panic("resume not implemented");
+    } else if (token.tag == .keyword_return) {
+        @panic("return not implemented");
+    } else {
+        {
+            const loop_expr_start = blk: {
+                if (BlockLabel(src, start, null)) |end| break :blk end;
+                break :blk start;
+            };
+            if (try LoopExpr(src, loop_expr_start, null)) |loop_end| {
+                _ = loop_end;
+                @panic("TODO: loop expr");
+            }
+        }
+
+        if (try Block(src, start, null)) |block_end| {
+            _ = block_end;
+            @panic("Block PrimaryExpr not implemented");
+        }
+
+        return CurlySuffixExpr(src, start, vm_opt);
+    }
+}
+
+// CurlySuffixExpr <- TypeExpr InitList?
+fn CurlySuffixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -896,6 +947,74 @@ fn PrimaryExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     }
 
     std.debug.panic("todo: Expr token tag={s} src='{s}'", .{@tagName(token.tag), src[token.loc.start..token.loc.end]});
+}
+
+// Block <- LBRACE Statement* RBRACE
+fn Block(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const statement_start = blk: {
+        const token = lex(src, start);
+        if (token.tag != .l_brace) return null;
+        break :blk token.loc.end;
+    };
+    _ = vm_opt;
+    _ = statement_start;
+    @panic("todo: Block");
+}
+
+// BlockLabel <- IDENTIFIER COLON
+fn BlockLabel(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
+    const id_token = lex(src, start);
+    if (id_token.tag != .identifier) return null;
+
+    const colon_token = lex(src, id_token.loc.end);
+    if (colon_token.tag != .colon) return null;
+
+    if (vm_opt) |vm| {
+        _ = vm;
+        @panic("TODO: register block label with vm");
+    }
+    return colon_token.loc.end;
+}
+
+// LoopExpr <- KEYWORD_inline? (ForExpr / WhileExpr)
+fn LoopExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    var token = lex(src, start);
+    const loop_start = blk: {
+        if (token.tag == .keyword_inline) {
+            token = lex(src, token.loc.end);
+            break :blk token.loc.end;
+        }
+        break :blk start;
+    };
+
+    _ = vm_opt;
+    if (try ForExpr(src, loop_start, null)) |for_end| {
+        _ = for_end;
+        @panic("todo: ForExpr");
+    } else if (try WhileExpr(src, loop_start, null)) |while_end| {
+        _ = while_end;
+        @panic("todo: WhileExpr");
+    } else return null;
+}
+
+// ForPrefix <- KEYWORD_for LPAREN ForArgumentsList RPAREN PtrListPayload
+fn ForExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    {
+        var token = lex(src, start);
+        if (token.tag != .keyword_for) return null;
+    }
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// WhileExpr <- WhilePrefix Expr (KEYWORD_else Payload? Expr)?
+fn WhileExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    {
+        var token = lex(src, start);
+        if (token.tag != .keyword_while) return null;
+    }
+    _ = vm_opt;
+    @panic("todo");
 }
 
 fn testExpr(src: [:0]const u8) !void {
