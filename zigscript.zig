@@ -639,80 +639,50 @@ fn lex(src: [:0]const u8, off: usize) std.zig.Token {
     return tokenizer.next();
 }
 
-// PrimaryTypeExpr
-//     <- BUILTINIDENTIFIER FnCallArguments
-//      / CHAR_LITERAL
-//      / ContainerDecl
-//      / DOT IDENTIFIER
-//      / DOT InitList
-//      / ErrorSetDecl
-//      / FLOAT
-//      / FnProto
-//      / GroupedExpr
-//      / LabeledTypeExpr
-//      / IDENTIFIER
-//      / IfTypeExpr
-//      / INTEGER
-//      / KEYWORD_comptime TypeExpr
-//      / KEYWORD_error DOT IDENTIFIER
-//      / KEYWORD_anyframe
-//      / KEYWORD_unreachable
-//      / STRINGLITERAL
-//      / SwitchExpr
-fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
-    const first_token = lex(src, start);
-    if (first_token.tag == .builtin) {
-        if (try FnCallArguments(src, first_token.loc.end, null)) |fn_call_end| {
-            if (vm_opt) |vm| {
-                const new_end = try FnCallArguments(src, first_token.loc.end, vm);
-                std.debug.assert(new_end == fn_call_end);
-                try vm.callBuiltin(first_token.loc);
-            }
-            return fn_call_end;
-        }
-    }
-    std.debug.panic("todo: token tag={s} src='{s}'", .{@tagName(first_token.tag), src[first_token.loc.start..first_token.loc.end]});
-}
-
-// FnCallArguments <- LPAREN ExprList RPAREN
-fn FnCallArguments(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
-    const expr_list_start = blk: {
-        const token = lex(src, start);
-        if (token.tag != .l_paren) return null;
-        break :blk token.loc.end;
+fn testExpr(src: [:0]const u8) !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
+    defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
+    var vm = Vm{
+        .src = src,
+        .allocator = gpa.allocator()
     };
-
-    const expr_list_end = try ExprList(src, expr_list_start, null);
-
-    const r_paren_token = lex(src, expr_list_end);
-    if (r_paren_token.tag != .r_paren) {
-        std.log.info("Not FnCallArguments, token={s}", .{@tagName(r_paren_token.tag)});
-        return null;
-    }
-
-    if (vm_opt) |vm| {
-        const new_end = try ExprList(src, expr_list_start, vm);
-        std.debug.assert(new_end == expr_list_end);
-    }
-    return r_paren_token.loc.end;
-}
-
-// ExprList <- (Expr COMMA)* Expr?
-fn ExprList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
-    var off = start;
-    while (try Expr(src, off, null)) |expr_end| {
-        if (vm_opt) |vm| {
-            const new_end = try Expr(src, off, vm);
-            std.debug.assert(new_end == expr_end);
+    defer vm.deinit();
+    if (PrimaryTypeExpr(src, 0, &vm)) |end| {
+        if (end != src.len) {
+            std.log.err("src '{s}' is not a PrimaryTypeExpr (end={})", .{src, end});
         }
-        off = expr_end;
-        const token = lex(src, off);
-        if (token.tag != .comma)
-            break;
-        off = token.loc.end;
+    } else |vm_err| switch (vm_err) {
+        error.Vm => {
+            const err = vm.err orelse @panic("vm reported error but has none?");
+            const error_msg = err.getTestMsg();
+            std.log.err("src '{s}' had unexpected error: {s}", .{src, error_msg});
+            return error.TestUnexpectedResult;
+        },
     }
-    return off;
 }
+fn testError(src: [:0]const u8, expected_error: []const u8) !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
+    defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
+    var vm = Vm{
+        .src = src,
+        .allocator = gpa.allocator()
+    };
+    defer vm.deinit();
+    if (PrimaryTypeExpr(src, 0, &vm)) |_| {
+        std.log.err("src '{s}' unexpectedly didn't have an error", .{src});
+        return error.TestUnexpectedResult;
+    } else |vm_err| switch (vm_err) {
+        error.Vm => {
+            const err = vm.err orelse @panic("vm reported error but has none?");
+            const actual_msg = err.getTestMsg();
+            return std.testing.expectEqualSlices(u8, expected_error, actual_msg);
+        },
+    }
+}
+
+// --------------------------------------------------------------------------------
+// GRAMMAR FUNCTIONS
+// --------------------------------------------------------------------------------
 
 // Expr <- BoolOrExpr
 const Expr = BoolOrExpr;
@@ -787,6 +757,7 @@ fn CompareExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 
 // BitwiseExpr <- BitShiftExpr (BitwiseOp BitShiftExpr)*
 const BitwiseExpr = BitShiftExpr; // TODO
+
 // BitShiftExpr <- AdditionExpr (BitShiftOp AdditionExpr)*
 const BitShiftExpr = AdditionExpr; // TODO
 
@@ -906,48 +877,7 @@ fn PrimaryExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     }
 }
 
-// CurlySuffixExpr <- TypeExpr InitList?
-fn CurlySuffixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    const token = lex(src, start);
-
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (token.tag == .string_literal) {
-        if (vm_opt) |vm| try vm.push_string_literal(token.loc);
-        return token.loc.end;
-    }
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (token.tag == .number_literal) {
-        if (vm_opt) |vm| try vm.push_number_literal(token.loc);
-        return token.loc.end;
-    }
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (token.tag == .r_paren) {
-        return null;
-    }
-
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (token.tag == .identifier) {
-        const slice = src[token.loc.start..token.loc.end];
-        if (std.mem.eql(u8, slice, "false")) {
-            if (vm_opt) |vm| vm.push_bool(false);
-            return token.loc.end;
-        }
-        if (std.mem.eql(u8, slice, "true")) {
-            if (vm_opt) |vm| vm.push_bool(true);
-            return token.loc.end;
-        }
-    }
-
-    std.debug.panic("todo: Expr token tag={s} src='{s}'", .{@tagName(token.tag), src[token.loc.start..token.loc.end]});
-}
+// IfExpr <- IfPrefix Expr (KEYWORD_else Payload? Expr)?
 
 // Block <- LBRACE Statement* RBRACE
 fn Block(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
@@ -959,21 +889,6 @@ fn Block(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     _ = vm_opt;
     _ = statement_start;
     @panic("todo: Block");
-}
-
-// BlockLabel <- IDENTIFIER COLON
-fn BlockLabel(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
-    const id_token = lex(src, start);
-    if (id_token.tag != .identifier) return null;
-
-    const colon_token = lex(src, id_token.loc.end);
-    if (colon_token.tag != .colon) return null;
-
-    if (vm_opt) |vm| {
-        _ = vm;
-        @panic("TODO: register block label with vm");
-    }
-    return colon_token.loc.end;
 }
 
 // LoopExpr <- KEYWORD_inline? (ForExpr / WhileExpr)
@@ -1017,43 +932,135 @@ fn WhileExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     @panic("todo");
 }
 
-fn testExpr(src: [:0]const u8) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
-    defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
-    var vm = Vm{
-        .src = src,
-        .allocator = gpa.allocator()
-    };
-    defer vm.deinit();
-    if (PrimaryTypeExpr(src, 0, &vm)) |end| {
-        if (end != src.len) {
-            std.log.err("src '{s}' is not a PrimaryTypeExpr (end={})", .{src, end});
+// CurlySuffixExpr <- TypeExpr InitList?
+fn CurlySuffixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const token = lex(src, start);
+
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK for now
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (token.tag == .string_literal) {
+        if (vm_opt) |vm| try vm.push_string_literal(token.loc);
+        return token.loc.end;
+    }
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK for now
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (token.tag == .number_literal) {
+        if (vm_opt) |vm| try vm.push_number_literal(token.loc);
+        return token.loc.end;
+    }
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK for now
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (token.tag == .r_paren) {
+        return null;
+    }
+
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK for now
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (token.tag == .identifier) {
+        const slice = src[token.loc.start..token.loc.end];
+        if (std.mem.eql(u8, slice, "false")) {
+            if (vm_opt) |vm| vm.push_bool(false);
+            return token.loc.end;
         }
-    } else |vm_err| switch (vm_err) {
-        error.Vm => {
-            const err = vm.err orelse @panic("vm reported error but has none?");
-            const error_msg = err.getTestMsg();
-            std.log.err("src '{s}' had unexpected error: {s}", .{src, error_msg});
-            return error.TestUnexpectedResult;
-        },
+        if (std.mem.eql(u8, slice, "true")) {
+            if (vm_opt) |vm| vm.push_bool(true);
+            return token.loc.end;
+        }
     }
+
+    std.debug.panic("todo: Expr token tag={s} src='{s}'", .{@tagName(token.tag), src[token.loc.start..token.loc.end]});
 }
-fn testError(src: [:0]const u8, expected_error: []const u8) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
-    defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
-    var vm = Vm{
-        .src = src,
-        .allocator = gpa.allocator()
-    };
-    defer vm.deinit();
-    if (PrimaryTypeExpr(src, 0, &vm)) |_| {
-        std.log.err("src '{s}' unexpectedly didn't have an error", .{src});
-        return error.TestUnexpectedResult;
-    } else |vm_err| switch (vm_err) {
-        error.Vm => {
-            const err = vm.err orelse @panic("vm reported error but has none?");
-            const actual_msg = err.getTestMsg();
-            return std.testing.expectEqualSlices(u8, expected_error, actual_msg);
-        },
+
+// PrimaryTypeExpr
+//     <- BUILTINIDENTIFIER FnCallArguments
+//      / CHAR_LITERAL
+//      / ContainerDecl
+//      / DOT IDENTIFIER
+//      / DOT InitList
+//      / ErrorSetDecl
+//      / FLOAT
+//      / FnProto
+//      / GroupedExpr
+//      / LabeledTypeExpr
+//      / IDENTIFIER
+//      / IfTypeExpr
+//      / INTEGER
+//      / KEYWORD_comptime TypeExpr
+//      / KEYWORD_error DOT IDENTIFIER
+//      / KEYWORD_anyframe
+//      / KEYWORD_unreachable
+//      / STRINGLITERAL
+//      / SwitchExpr
+fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
+    const first_token = lex(src, start);
+    if (first_token.tag == .builtin) {
+        if (try FnCallArguments(src, first_token.loc.end, null)) |fn_call_end| {
+            if (vm_opt) |vm| {
+                const new_end = try FnCallArguments(src, first_token.loc.end, vm);
+                std.debug.assert(new_end == fn_call_end);
+                try vm.callBuiltin(first_token.loc);
+            }
+            return fn_call_end;
+        }
     }
+    std.debug.panic("todo: token tag={s} src='{s}'", .{@tagName(first_token.tag), src[first_token.loc.start..first_token.loc.end]});
+}
+
+// BlockLabel <- IDENTIFIER COLON
+fn BlockLabel(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
+    const id_token = lex(src, start);
+    if (id_token.tag != .identifier) return null;
+
+    const colon_token = lex(src, id_token.loc.end);
+    if (colon_token.tag != .colon) return null;
+
+    if (vm_opt) |vm| {
+        _ = vm;
+        @panic("TODO: register block label with vm");
+    }
+    return colon_token.loc.end;
+}
+
+// FnCallArguments <- LPAREN ExprList RPAREN
+fn FnCallArguments(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+    const expr_list_start = blk: {
+        const token = lex(src, start);
+        if (token.tag != .l_paren) return null;
+        break :blk token.loc.end;
+    };
+
+    const expr_list_end = try ExprList(src, expr_list_start, null);
+
+    const r_paren_token = lex(src, expr_list_end);
+    if (r_paren_token.tag != .r_paren) {
+        std.log.info("Not FnCallArguments, token={s}", .{@tagName(r_paren_token.tag)});
+        return null;
+    }
+
+    if (vm_opt) |vm| {
+        const new_end = try ExprList(src, expr_list_start, vm);
+        std.debug.assert(new_end == expr_list_end);
+    }
+    return r_paren_token.loc.end;
+}
+
+// ExprList <- (Expr COMMA)* Expr?
+fn ExprList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
+    var off = start;
+    while (try Expr(src, off, null)) |expr_end| {
+        if (vm_opt) |vm| {
+            const new_end = try Expr(src, off, vm);
+            std.debug.assert(new_end == expr_end);
+        }
+        off = expr_end;
+        const token = lex(src, off);
+        if (token.tag != .comma)
+            break;
+        off = token.loc.end;
+    }
+    return off;
 }
