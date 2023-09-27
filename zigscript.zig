@@ -148,6 +148,11 @@ pub fn main() !void {
     try testError("@assert(!!!true)", "assert failed");
     try testError("@assert(!0)", "expected type 'bool' found 'number'");
     try testError("@assert(!\"a\")", "expected type 'bool' found 'string'");
+
+    try testError("@assert(-false)", "negation of type 'bool'");
+    try testError("@assert(-\"a\")", "negation of type 'string'");
+    try testExpr("@assert(0 - 1 == -1)");
+    try testExpr("@assert(-123 == -100 - 23)");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -456,8 +461,9 @@ const Vm = struct {
 
     pub fn applyPrefixOp(self: *Vm, op: PrefixOp, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 1); // should be guaranteed
-        const value = self.stack.pop();
-        defer value.deinit(self.allocator);
+        var value = self.stack.pop();
+        var deinit_value = true;
+        defer if (deinit_value) value.deinit(self.allocator);
 
         switch (op) {
             .not => {
@@ -465,7 +471,15 @@ const Vm = struct {
                     op_loc, "expected type 'bool' found '{s}'", .{@tagName(value)}
                 );
                 self.stack.appendAssumeCapacity(.{ .bool = !value.bool });
-            }
+            },
+            .negate => {
+                if (value != .number) return self.generalError(
+                    op_loc, "negation of type '{s}'", .{@tagName(value)}
+                );
+                deinit_value = false;
+                value.number.negate();
+                self.stack.appendAssumeCapacity(.{ .number = value.number });
+            },
         }
     }
 };
@@ -591,11 +605,12 @@ fn asMultiplyOp(token: std.zig.Token) ?MultiplyOp {
 
 const PrefixOp = enum {
     not,
+    negate,
 };
 fn asPrefixOp(token: std.zig.Token) ?PrefixOp {
     return switch (token.tag) {
         .bang => .not,
-        .minus => @panic("todo"),
+        .minus => .negate,
         .tilde => @panic("todo"),
         .minus_percent => @panic("todo"),
         .ampersand => @panic("todo"),
