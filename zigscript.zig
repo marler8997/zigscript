@@ -101,6 +101,20 @@ pub fn main() !void {
         \\@out("\?")
         , "invalid string literal",
     );
+
+    try testError("@assert(false ++ false)", "expected indexable; found 'bool'");
+    try testError("@assert(0 ++ false)", "expected indexable; found 'number'");
+    try testError("@assert(\"a\" ++ false)", "expected indexable; found 'bool'");
+    try testError("@assert(\"a\" ++ 0)", "expected indexable; found 'number'");
+    try testExpr(
+        \\@out("Hello, " ++ "World with Concat!\n")
+    );
+    try testError("@assert(false + false)", "invalid operands to binary expression 'bool' and 'bool'");
+    try testError("@assert(false - false)", "invalid operands to binary expression 'bool' and 'bool'");
+    try testError("@assert(false +% false)", "invalid operands to binary expression 'bool' and 'bool'");
+    try testError("@assert(false -% false)", "invalid operands to binary expression 'bool' and 'bool'");
+    try testError("@assert(false +| false)", "invalid operands to binary expression 'bool' and 'bool'");
+    try testError("@assert(false -| false)", "invalid operands to binary expression 'bool' and 'bool'");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -310,6 +324,33 @@ const Vm = struct {
         };
         return lhs.toConst().order(rhs.toConst()).compare(op);
     }
+
+    pub fn additionOp(self: *Vm, op: AdditionOp, op_loc: usize) error{Vm}!void {
+        std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
+        const rhs = self.stack.pop();
+        defer rhs.deinit(self.allocator);
+        const lhs = self.stack.pop();
+        defer lhs.deinit(self.allocator);
+
+        if (op == .concat) {
+            if (lhs != .string)
+                return self.generalError(op_loc, "expected indexable; found '{s}'", .{lhs.error_desc()});
+            if (rhs != .string)
+                return self.generalError(op_loc, "expected indexable; found '{s}'", .{rhs.error_desc()});
+            self.stack.appendAssumeCapacity(.{
+                .string = std.mem.concat(self.allocator, u8, &.{ lhs.string, rhs.string }) catch |e| oom(e),
+            });
+            return;
+        }
+
+        if (lhs == .bool or rhs == .bool) return self.generalError(
+            op_loc,
+            "invalid operands to binary expression '{s}' and '{s}'",
+            .{ lhs.error_desc(), rhs.error_desc() }
+        );
+
+        @panic("todo");
+    }
 };
 
 const ValueType = enum {
@@ -371,6 +412,29 @@ fn asCompareOp(token: std.zig.Token) ?std.math.CompareOperator {
         .angle_bracket_right => .gt,
         .angle_bracket_left_equal => .lte,
         .angle_bracket_right_equal => .gte,
+        else => return null,
+    };
+}
+
+const AdditionOp = enum {
+    concat,
+    add,
+    sub,
+    // TODO: start out not supporting these operations in zigscript
+    add_wrap,
+    sub_wrap,
+    add_sat,
+    sub_sat,
+};
+fn asAdditionOp(token: std.zig.Token) ?AdditionOp {
+    return switch (token.tag) {
+        .plus_plus => return .concat,
+        .plus => return .add,
+        .minus => return .sub,
+        .plus_percent => return .add_wrap,
+        .minus_percent => return .sub_wrap,
+        .plus_pipe => return .add_sat,
+        .minus_pipe => return .sub_sat,
         else => return null,
     };
 }
@@ -532,7 +596,32 @@ fn CompareExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 }
 
 // BitwiseExpr <- BitShiftExpr (BitwiseOp BitShiftExpr)*
-fn BitwiseExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+const BitwiseExpr = BitShiftExpr; // TODO
+// BitShiftExpr <- AdditionExpr (BitShiftOp AdditionExpr)*
+const BitShiftExpr = AdditionExpr; // TODO
+
+fn AdditionExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const first_expr_end = try MultiplyExpr(src, start, null) orelse return null;
+    if (vm_opt) |vm|
+        std.debug.assert(first_expr_end == try MultiplyExpr(src, start, vm));
+
+    var off = first_expr_end;
+    while (true) {
+        const token = lex(src, off);
+        const op = asAdditionOp(token) orelse break;
+
+        const expr_end = try MultiplyExpr(src, token.loc.end, null) orelse break;
+        if (vm_opt) |vm| {
+            std.debug.assert(expr_end == try MultiplyExpr(src, token.loc.end, vm));
+            try vm.additionOp(op, token.loc.start);
+        }
+
+        off = expr_end;
+    }
+    return off;
+}
+
+fn MultiplyExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
