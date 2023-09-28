@@ -42,13 +42,90 @@ pub fn Root(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!void {
 
 // ContainerMembers <- ContainerDeclarations (ContainerField COMMA)* (ContainerField / ContainerDeclarations)
 pub fn ContainerMembers(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!usize {
+    const decl_end = try ContainerDeclarations(src, start, vm);
+
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    const token = lex(src, decl_end);
+    if (token.tag == .eof) return decl_end;
+    std.debug.panic("todo: ContainerMembers token {s}", .{@tagName(token.tag)});
+}
+
+// ContainerDeclarations
+//     <- TestDecl ContainerDeclarations
+//      / ComptimeDecl ContainerDeclarations
+//      / doc_comment? KEYWORD_pub? Decl ContainerDeclarations
+//      /
+//
+// REWRITTEN AS:
+//
+// ContainerDeclarations
+//     <- (TestDecl / ComptimeDecl / doc_comment? KEYWORD_pub? Decl)*
+pub fn ContainerDeclarations(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!usize {
+
+    var off = start;
+    while (true) {
+        if (try TestDecl(src, off, vm)) |decl_end| {
+            _ = decl_end;
+            @panic("todo");
+        } else if (try ComptimeDecl(src, off, vm)) |decl_end| {
+            _ = decl_end;
+            @panic("todo");
+        } else {
+            var token = lex(src, off);
+            if (token.tag == .doc_comment) {
+                off = token.loc.end;
+                token = lex(src, off);
+            }
+
+            var is_pub = false;
+            if (token.tag == .keyword_pub) {
+                is_pub = true;
+                off = token.loc.end;
+                token = lex(src, off);
+            }
+
+            off = try Decl(src, off, vm) orelse return off;
+        }
+    }
+}
+
+// TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block
+fn TestDecl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
+    const off = blk: {
+        const token = lex(src, start);
+        if (token.tag != .keyword_test) return null;
+        break :blk token.loc.end;
+    };
+    _ = off;
+    _ = vm;
+    @panic("todo: testDecl");
+}
+
+// ComptimeDecl <- KEYWORD_comptime Block
+fn ComptimeDecl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
+    const off = blk: {
+        const token = lex(src, start);
+        if (token.tag != .keyword_comptime) return null;
+        break :blk token.loc.end;
+    };
+    return Block(src, off, vm);
+}
+
+// Decl
+//     <- (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / (KEYWORD_inline / KEYWORD_noinline))? FnProto (SEMICOLON / Block)
+//      / (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? GlobalVarDecl
+//      / KEYWORD_usingnamespace Expr SEMICOLON
+fn Decl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     // GRAMMAR HACK
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     const token = lex(src, start);
-    if (token.tag == .eof) return token.loc.start;
+    if (token.tag == .eof) return null;
+
     _ = vm;
-    std.debug.panic("todo: ContainerMembers token {s}", .{@tagName(token.tag)});
+    std.debug.panic("todo: Decl token {s}", .{@tagName(token.tag)});
 }
 
 // FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? AddrSpace? LinkSection? CallConv? EXCLAMATIONMARK? TypeExpr
