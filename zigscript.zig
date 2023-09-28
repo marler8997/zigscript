@@ -173,6 +173,8 @@ pub fn main() !void {
     try testExpr("comptime false");
     try testExpr("comptime 0");
     try testExpr("comptime \"hello\"");
+
+    try testSrc("//! a doc comment");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -180,6 +182,7 @@ pub fn oom(e: error{OutOfMemory}) noreturn {
 }
 
 const TokenError = enum {
+    expected_eof,
     not_implemented,
     assert_failed,
     unknown_builtin,
@@ -202,6 +205,7 @@ const VmError = struct {
     pub fn getTestMsg(self: VmError) []const u8 {
         switch (self.kind) {
             .token => |token_error| switch (token_error) {
+                .expected_eof => return "expected eof",
                 .not_implemented => return "not implemented",
                 .assert_failed => return "assert failed",
                 .unknown_builtin => return "unknown builtin",
@@ -666,4 +670,15 @@ fn testError(src: [:0]const u8, expected_error: []const u8) !void {
             return std.testing.expectEqualSlices(u8, expected_error, actual_msg);
         },
     }
+}
+
+fn testSrc(src: [:0]const u8) !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
+    defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
+    var vm = Vm{
+        .src = src,
+        .allocator = gpa.allocator()
+    };
+    defer vm.deinit();
+    try interp.Root(src, 0, &vm);
 }

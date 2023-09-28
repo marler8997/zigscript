@@ -26,6 +26,31 @@ fn lex(src: [:0]const u8, off: usize) std.zig.Token {
 // GRAMMAR FUNCTIONS
 // --------------------------------------------------------------------------------
 
+// Root <- skip container_doc_comment? ContainerMembers eof
+pub fn Root(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!void {
+    const off = blk: {
+        var token = lex(src, start);
+        if (token.tag == .container_doc_comment)
+            break :blk token.loc.end;
+        break :blk start;
+    };
+    const end = try ContainerMembers(src, off, vm);
+    const token = lex(src, end);
+    if (token.tag != .eof)
+        return vm.tokenError(token.loc.start, .expected_eof);
+}
+
+// ContainerMembers <- ContainerDeclarations (ContainerField COMMA)* (ContainerField / ContainerDeclarations)
+pub fn ContainerMembers(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!usize {
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    const token = lex(src, start);
+    if (token.tag == .eof) return token.loc.start;
+    _ = vm;
+    std.debug.panic("todo: ContainerMembers token {s}", .{@tagName(token.tag)});
+}
+
 // FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? AddrSpace? LinkSection? CallConv? EXCLAMATIONMARK? TypeExpr
 fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const after_fn = blk: {
