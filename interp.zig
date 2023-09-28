@@ -1,66 +1,12 @@
 const std = @import("std");
 const zigscript = @import("zigscript.zig");
 const Vm = zigscript.Vm;
-const AdditionOp = zigscript.AdditionOp;
-const MultiplyOp = zigscript.MultiplyOp;
-const PrefixOp = zigscript.PrefixOp;
-
-fn asCompareOp(token: std.zig.Token) ?std.math.CompareOperator {
-    return switch (token.tag) {
-        .equal_equal => .eq,
-        .bang_equal => .neq,
-        .angle_bracket_left => .lt,
-        .angle_bracket_right => .gt,
-        .angle_bracket_left_equal => .lte,
-        .angle_bracket_right_equal => .gte,
-        else => return null,
-    };
-}
-
-fn asAdditionOp(token: std.zig.Token) ?AdditionOp {
-    return switch (token.tag) {
-        .plus_plus => return .concat,
-        .plus => return .add,
-        .minus => return .sub,
-        .plus_percent => return .add_wrap,
-        .minus_percent => return .sub_wrap,
-        .plus_pipe => return .add_sat,
-        .minus_pipe => return .sub_sat,
-        else => return null,
-    };
-}
-
-fn asMultiplyOp(token: std.zig.Token) ?MultiplyOp {
-    return switch (token.tag) {
-        .pipe_pipe => .double_pipe,
-        .asterisk => .mul,
-        .slash => @panic("todo"),
-        .percent => @panic("todo"),
-        .asterisk_asterisk => @panic("todo"),
-        .asterisk_percent => @panic("todo"),
-        .asterisk_pipe => @panic("todo"),
-        else => return null,
-    };
-}
-
-fn asPrefixOp(token: std.zig.Token) ?PrefixOp {
-    return switch (token.tag) {
-        .bang => .not,
-        .minus => .negate,
-        .tilde => @panic("todo"),
-        .minus_percent => @panic("todo"),
-        .ampersand => @panic("todo"),
-        .keyword_try => @panic("todo"),
-        .keyword_await => @panic("todo"),
-        else => return null,
-    };
-}
 
 fn applyPrefixOps(src: [:0]const u8, start: usize, op_count: u16, vm: *Vm) error{Vm}!void {
     var off = start;
     for (0 .. op_count) |_| {
         const token = lex(src, off);
-        const op = asPrefixOp(token) orelse unreachable;
+        const op = PrefixOp(token) orelse unreachable;
         try vm.applyPrefixOp(op, token.loc.start);
         off = token.loc.end;
     }
@@ -142,7 +88,7 @@ fn CompareExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     var off = first_expr_end;
     while (true) {
         const token = lex(src, off);
-        const compare_op = asCompareOp(token) orelse break;
+        const compare_op = CompareOp(token) orelse break;
 
         const expr_end = try BitwiseExpr(src, token.loc.end, null) orelse break;
         if (vm_opt) |vm| {
@@ -168,7 +114,7 @@ fn AdditionExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize 
     var off = first_expr_end;
     while (true) {
         const token = lex(src, off);
-        const op = asAdditionOp(token) orelse break;
+        const op = AdditionOp(token) orelse break;
 
         const expr_end = try MultiplyExpr(src, token.loc.end, null) orelse break;
         if (vm_opt) |vm| {
@@ -188,7 +134,7 @@ fn MultiplyExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize 
     var off = first_expr_end;
     while (true) {
         const token = lex(src, off);
-        const op = asMultiplyOp(token) orelse break;
+        const op = MultiplyOp(token) orelse break;
 
         const expr_end = try PrefixExpr(src, token.loc.end, null) orelse break;
         if (vm_opt) |vm| {
@@ -209,7 +155,7 @@ fn PrefixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
         var off = start;
         while (true) {
             const token = lex(src, off);
-            _ = asPrefixOp(token) orelse break :blk off;
+            _ = PrefixOp(token) orelse break :blk off;
             off = token.loc.end;
             op_count += 1;
         }
@@ -670,6 +616,58 @@ fn ForPrefix(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
     }
     _ = vm_opt;
     @panic("todo");
+}
+
+
+fn CompareOp(token: std.zig.Token) ?std.math.CompareOperator {
+    return switch (token.tag) {
+        .equal_equal => .eq,
+        .bang_equal => .neq,
+        .angle_bracket_left => .lt,
+        .angle_bracket_right => .gt,
+        .angle_bracket_left_equal => .lte,
+        .angle_bracket_right_equal => .gte,
+        else => return null,
+    };
+}
+
+fn AdditionOp(token: std.zig.Token) ?zigscript.AdditionOp {
+    return switch (token.tag) {
+        .plus_plus => return .concat,
+        .plus => return .add,
+        .minus => return .sub,
+        .plus_percent => return .add_wrap,
+        .minus_percent => return .sub_wrap,
+        .plus_pipe => return .add_sat,
+        .minus_pipe => return .sub_sat,
+        else => return null,
+    };
+}
+
+fn MultiplyOp(token: std.zig.Token) ?zigscript.MultiplyOp {
+    return switch (token.tag) {
+        .pipe_pipe => .double_pipe,
+        .asterisk => .mul,
+        .slash => @panic("todo"),
+        .percent => @panic("todo"),
+        .asterisk_asterisk => @panic("todo"),
+        .asterisk_percent => @panic("todo"),
+        .asterisk_pipe => @panic("todo"),
+        else => return null,
+    };
+}
+
+fn PrefixOp(token: std.zig.Token) ?zigscript.PrefixOp {
+    return switch (token.tag) {
+        .bang => .not,
+        .minus => .negate,
+        .tilde => @panic("todo"),
+        .minus_percent => @panic("todo"),
+        .ampersand => @panic("todo"),
+        .keyword_try => @panic("todo"),
+        .keyword_await => @panic("todo"),
+        else => return null,
+    };
 }
 
 // PrefixTypeOp
