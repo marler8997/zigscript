@@ -56,7 +56,7 @@ fn asPrefixOp(token: std.zig.Token) ?PrefixOp {
     };
 }
 
-fn applyPrefixOps(src: [:0]const u8, start: usize, op_count: u16, vm: *Vm) !void {
+fn applyPrefixOps(src: [:0]const u8, start: usize, op_count: u16, vm: *Vm) error{Vm}!void {
     var off = start;
     for (0 .. op_count) |_| {
         const token = lex(src, off);
@@ -81,7 +81,7 @@ fn lex(src: [:0]const u8, off: usize) std.zig.Token {
 // --------------------------------------------------------------------------------
 
 // Expr <- BoolOrExpr
-const Expr = BoolOrExpr;
+pub const Expr = BoolOrExpr;
 
 // BoolOrExpr <- BoolAndExpr (KEYWORD_or BoolAndExpr)*
 fn BoolOrExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
@@ -322,6 +322,10 @@ fn CurlySuffixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usi
     return expr_end;
 }
 
+// InitList
+//     <- LBRACE FieldInit (COMMA FieldInit)* COMMA? RBRACE
+//      / LBRACE Expr (COMMA Expr)* COMMA? RBRACE
+//      / LBRACE RBRACE
 fn InitList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
     if (token.tag != .l_brace)
@@ -339,46 +343,39 @@ fn TypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     return ErrorUnionExpr(src, off, vm_opt);
 }
 
+// ErrorUnionExpr <- SuffixExpr (EXCLAMATIONMARK TypeExpr)?
 fn ErrorUnionExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const expr_end = try SuffixExpr(src, start, vm_opt) orelse return null;
+
+    const token = lex(src, expr_end);
+    if (token.tag == .bang) {
+        if (try TypeExpr(src, token.loc.end, vm_opt)) |end| {
+            if (vm_opt) |vm| try vm.applyErrorUnion(token.loc.start);
+            return end;
+        }
+    }
+    return expr_end;
+}
+
+// SuffixExpr
+//     <- KEYWORD_async PrimaryTypeExpr SuffixOp* FnCallArguments
+//      / PrimaryTypeExpr (SuffixOp / FnCallArguments)*
+fn SuffixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
+    if (token.tag == .keyword_async)
+        @panic("async not implemented");
 
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (token.tag == .string_literal) {
-        if (vm_opt) |vm| try vm.push_string_literal(token.loc);
-        return token.loc.end;
+    var off = try PrimaryTypeExpr(src, start, vm_opt) orelse return null;
+    while (true) {
+        if (try SuffixOp(src, off, vm_opt)) |end| {
+            off = end;
+            @panic("TODO: apply SuffixOp");
+        } else if (try FnCallArguments(src, off, vm_opt)) |end| {
+            off = end;
+            @panic("TODO: apply FnCallArguments");
+        } else break;
     }
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (token.tag == .number_literal) {
-        if (vm_opt) |vm| try vm.push_number_literal(token.loc);
-        return token.loc.end;
-    }
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (token.tag == .r_paren) {
-        return null;
-    }
-
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (token.tag == .identifier) {
-        const slice = src[token.loc.start..token.loc.end];
-        if (std.mem.eql(u8, slice, "false")) {
-            if (vm_opt) |vm| vm.push_bool(false);
-            return token.loc.end;
-        }
-        if (std.mem.eql(u8, slice, "true")) {
-            if (vm_opt) |vm| vm.push_bool(true);
-            return token.loc.end;
-        }
-    }
-
-    std.debug.panic("todo: Expr token tag={s} src='{s}'", .{@tagName(token.tag), src[token.loc.start..token.loc.end]});
+    return off;
 }
 
 // PrimaryTypeExpr
@@ -401,7 +398,7 @@ fn ErrorUnionExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usiz
 //      / KEYWORD_unreachable
 //      / STRINGLITERAL
 //      / SwitchExpr
-pub fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
+fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const first_token = lex(src, start);
     if (first_token.tag == .builtin) {
         if (try FnCallArguments(src, first_token.loc.end, null)) |fn_call_end| {
@@ -412,8 +409,98 @@ pub fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
             }
             return fn_call_end;
         }
+    } else if (first_token.tag == .char_literal) {
+        if (vm_opt) |vm| try vm.pushCharLiteral(first_token);
+        return first_token.loc.end;
+    } else if (try ContainerDecl(src, start, vm_opt)) |decl_end| {
+        return decl_end;
+    }
+
+    if (first_token.tag == .period) {
+        const second_token = lex(src, first_token.loc.end);
+        if (second_token.tag == .identifier) {
+            if (vm_opt) |vm| try vm.pushDotIdentifier(second_token);
+            return second_token.loc.end;
+        } else if (try InitList(src, first_token.loc.end, vm_opt)) |end| {
+            _ = end;
+            @panic("b");
+        }
+    }
+
+    if (try ErrorSetDecl(src, start, vm_opt)) |end|
+        return end;
+
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK for now
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (first_token.tag == .string_literal) {
+        if (vm_opt) |vm| try vm.push_string_literal(first_token.loc);
+        return first_token.loc.end;
+    }
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK for now
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (first_token.tag == .number_literal) {
+        if (vm_opt) |vm| try vm.push_number_literal(first_token.loc);
+        return first_token.loc.end;
+    }
+
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK for now
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (first_token.tag == .r_paren) {
+        return null;
+    }
+
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK for now
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (first_token.tag == .identifier) {
+        const slice = src[first_token.loc.start..first_token.loc.end];
+        if (std.mem.eql(u8, slice, "false")) {
+            if (vm_opt) |vm| vm.push_bool(false);
+            return first_token.loc.end;
+        }
+        if (std.mem.eql(u8, slice, "true")) {
+            if (vm_opt) |vm| vm.push_bool(true);
+            return first_token.loc.end;
+        }
     }
     std.debug.panic("todo: token tag={s} src='{s}'", .{@tagName(first_token.tag), src[first_token.loc.start..first_token.loc.end]});
+}
+
+// ContainerDecl <- (KEYWORD_extern / KEYWORD_packed)? ContainerDeclAuto
+fn ContainerDecl(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    var modifier: ?enum { @"extern", @"packed" } = null;
+
+    const decl_start = blk: {
+        const token = lex(src, start);
+        if (token.tag == .keyword_extern) {
+            modifier = .@"extern";
+            break :blk token.loc.end;
+        }
+        if (token.tag == .keyword_packed) {
+            modifier = .@"packed";
+            break :blk token.loc.end;
+        }
+        break :blk start;
+    };
+
+    const end = try ContainerDeclAuto(src, decl_start, vm_opt) orelse return null;
+    if (vm_opt) |vm| {
+        _ = vm;
+        if (modifier) |_| @panic("todo: apply container modifier to vm type");
+    }
+    return end;
+}
+
+// ErrorSetDecl <- KEYWORD_error LBRACE IdentifierList RBRACE
+fn ErrorSetDecl(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const token = lex(src, start);
+    if (token.tag != .keyword_error)
+        return null;
+    _ = vm_opt;
+    @panic("todo");
 }
 
 // BlockLabel <- IDENTIFIER COLON
@@ -437,7 +524,7 @@ fn BlockLabel(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
 //      / SliceTypeStart (ByteAlign / AddrSpace / KEYWORD_const / KEYWORD_volatile / KEYWORD_allowzero)*
 //      / PtrTypeStart (AddrSpace / KEYWORD_align LPAREN Expr (COLON Expr COLON Expr)? RPAREN / KEYWORD_const / KEYWORD_volatile / KEYWORD_allowzero)*
 //      / ArrayTypeStart
-fn PrefixTypeOp(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+fn PrefixTypeOp(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const first_token = lex(src, start);
     if (first_token.tag == .question_mark) {
         if (vm_opt) |vm|
@@ -456,8 +543,28 @@ fn PrefixTypeOp(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
     } else return null;
 }
 
+// SuffixOp
+//     <- LBRACKET Expr (DOT2 (Expr? (COLON Expr)?)?)? RBRACKET
+//      / DOT IDENTIFIER
+//      / DOTASTERISK
+//      / DOTQUESTIONMARK
+fn SuffixOp(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    _ = vm_opt;
+    const token = lex(src, start);
+    if (token.tag == .l_bracket) {
+        @panic("todo");
+    } else if (token.tag == .period) {
+        @panic("todo");
+    } else if (token.tag == .period_asterisk) {
+        @panic("todo");
+    // don't see this token in tokenizer.zig
+    //} else if (token.tag == .period_question_mark) {
+    //    @panic("todo");
+    } else return null;
+}
+
 // FnCallArguments <- LPAREN ExprList RPAREN
-fn FnCallArguments(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+fn FnCallArguments(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const expr_list_start = blk: {
         const token = lex(src, start);
         if (token.tag != .l_paren) return null;
@@ -480,7 +587,7 @@ fn FnCallArguments(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
 }
 
 // SliceTypeStart <- LBRACKET (COLON Expr)? RBRACKET
-fn SliceTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+fn SliceTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
     if (token.tag != .l_bracket)
         return null;
@@ -492,7 +599,7 @@ fn SliceTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
 //     <- ASTERISK
 //      / ASTERISK2
 //      / LBRACKET ASTERISK (LETTERC / COLON Expr)? RBRACKET
-fn PtrTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+fn PtrTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
     if (token.tag == .asterisk) {
         if (vm_opt) |vm| try vm.applyPtrType(token.loc.start);
@@ -505,7 +612,7 @@ fn PtrTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
 }
 
 // ArrayTypeStart <- LBRACKET Expr (COLON Expr)? RBRACKET
-fn ArrayTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+fn ArrayTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
     if (token.tag != .l_bracket)
         return null;
@@ -513,8 +620,35 @@ fn ArrayTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
     @panic("todo");
 }
 
+// ContainerDeclAuto <- ContainerDeclType LBRACE container_doc_comment? ContainerMembers RBRACE
+fn ContainerDeclAuto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const decl_type_end = try ContainerDeclType(src, start, null) orelse return null;
+    _ = decl_type_end;
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// ContainerDeclType
+//     <- KEYWORD_struct (LPAREN Expr RPAREN)?
+//      / KEYWORD_opaque
+//      / KEYWORD_enum (LPAREN Expr RPAREN)?
+//      / KEYWORD_union (LPAREN (KEYWORD_enum (LPAREN Expr RPAREN)? / Expr) RPAREN)?
+fn ContainerDeclType(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    _ = vm_opt;
+    const first_token = lex(src, start);
+    if (first_token.tag == .keyword_struct) {
+        @panic("todo");
+    } else if (first_token.tag == .keyword_opaque) {
+        @panic("todo");
+    } else if (first_token.tag == .keyword_enum) {
+        @panic("todo");
+    } else if (first_token.tag == .keyword_union) {
+        @panic("todo");
+    } else return null;
+}
+
 // ExprList <- (Expr COMMA)* Expr?
-fn ExprList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !usize {
+fn ExprList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!usize {
     var off = start;
     while (try Expr(src, off, null)) |expr_end| {
         if (vm_opt) |vm| {

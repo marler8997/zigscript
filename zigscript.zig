@@ -157,6 +157,10 @@ pub fn main() !void {
 
     try testError("@assert(?0)", "not implemented");
     try testError("@assert(??0)", "not implemented");
+    try testError("@assert(0!0)", "not implemented");
+
+    try testError("'a'", "not implemented");
+    try testError(".a", "not implemented");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -265,6 +269,14 @@ pub const Vm = struct {
         self.stack.append(self.allocator, .{
             .number = num.toMutable(),
         }) catch |e| oom(e);
+    }
+
+    pub fn pushCharLiteral(self: *Vm, token: std.zig.Token) error{Vm}!void {
+        return self.tokenError(token.loc.start, .not_implemented);
+    }
+
+    pub fn pushDotIdentifier(self: *Vm, token: std.zig.Token) error{Vm}!void {
+        return self.tokenError(token.loc.start, .not_implemented);
     }
 
     fn enforceArgCount(self: *Vm, loc: usize, count: usize) error{Vm}!void {
@@ -496,6 +508,10 @@ pub const Vm = struct {
         _ = op_loc;
         @panic("todo");
     }
+
+    pub fn applyErrorUnion(self: *Vm, op_loc: usize) error{Vm}!void {
+        return self.tokenError(op_loc, .not_implemented);
+    }
 };
 
 const ValueType = enum {
@@ -595,9 +611,9 @@ fn testExpr(src: [:0]const u8) !void {
         .allocator = gpa.allocator()
     };
     defer vm.deinit();
-    if (interp.PrimaryTypeExpr(src, 0, &vm)) |end| {
+    if (interp.Expr(src, 0, &vm)) |end| {
         if (end != src.len) {
-            std.log.err("src '{s}' is not a PrimaryTypeExpr (end={})", .{src, end});
+            std.log.err("src '{s}' is not an Expr (end={?})", .{src, end});
         }
     } else |vm_err| switch (vm_err) {
         error.Vm => {
@@ -616,7 +632,7 @@ fn testError(src: [:0]const u8, expected_error: []const u8) !void {
         .allocator = gpa.allocator()
     };
     defer vm.deinit();
-    if (interp.PrimaryTypeExpr(src, 0, &vm)) |_| {
+    if (interp.Expr(src, 0, &vm)) |_| {
         std.log.err("src '{s}' unexpectedly didn't have an error", .{src});
         return error.TestUnexpectedResult;
     } else |vm_err| switch (vm_err) {
