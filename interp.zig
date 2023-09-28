@@ -466,21 +466,29 @@ fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usi
         }
         return first_token.loc.end;
     }
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    if (try IfTypeExpr(src, start, vm_opt)) |end|
+        return end;
+
+    if (first_token.tag == .keyword_comptime)
+        return TypeExpr(src, first_token.loc.end, vm_opt);
+
+    // TODO: KEYWORD_error DOT IDENTIFIER
+    if (first_token.tag == .keyword_error)
+        @panic("todo");
+
+    if (first_token.tag == .keyword_anyframe)
+        @panic("todo: anyframe");
+
+    if (first_token.tag == .keyword_unreachable)
+        @panic("todo: unreachable");
+
     if (first_token.tag == .string_literal) {
         if (vm_opt) |vm| try vm.push_string_literal(first_token.loc);
         return first_token.loc.end;
     }
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK for now
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (first_token.tag == .r_paren) {
-        return null;
-    }
 
-    std.debug.panic("todo: token tag={s} src='{s}'", .{@tagName(first_token.tag), src[first_token.loc.start..first_token.loc.end]});
+    return SwitchExpr(src, start, vm_opt);
 }
 
 // ContainerDecl <- (KEYWORD_extern / KEYWORD_packed)? ContainerDeclAuto
@@ -535,6 +543,14 @@ fn GroupedExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
         std.debug.assert(expr_end == new_end);
     }
     return token.loc.end;
+}
+
+// IfTypeExpr <- IfPrefix TypeExpr (KEYWORD_else Payload? TypeExpr)?
+fn IfTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const prefix_end = IfPrefix(src, start, null) orelse return null;
+    _ = prefix_end;
+    _ = vm_opt;
+    @panic("todo");
 }
 
 // LabeledTypeExpr
@@ -596,6 +612,22 @@ fn WhileTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize
     return null;
 }
 
+// SwitchExpr <- KEYWORD_switch LPAREN Expr RPAREN LBRACE SwitchProngList RBRACE
+fn SwitchExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const expr_start = blk: {
+        const first_token = lex(src, start);
+        if (first_token.tag != .keyword_switch)
+            return null;
+        const second_token = lex(src, first_token.loc.end);
+        if (second_token.tag != .l_paren)
+            return null;
+        break :blk second_token.loc.end;
+    };
+    _ = expr_start;
+    _ = vm_opt;
+    @panic("todo");
+}
+
 // BlockLabel <- IDENTIFIER COLON
 fn BlockLabel(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
     const id_token = lex(src, start);
@@ -608,6 +640,16 @@ fn BlockLabel(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
         vm.pushBlockLabel(id_token.loc);
     }
     return colon_token.loc.end;
+}
+
+// IfPrefix <- KEYWORD_if LPAREN Expr RPAREN PtrPayload?
+fn IfPrefix(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
+    {
+        var token = lex(src, start);
+        if (token.tag != .keyword_if) return null;
+    }
+    _ = vm_opt;
+    @panic("todo");
 }
 
 // WhilePrefix <- KEYWORD_while LPAREN Expr RPAREN PtrPayload? WhileContinueExpr?

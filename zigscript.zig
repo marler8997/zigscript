@@ -169,6 +169,10 @@ pub fn main() !void {
     try testExpr("true");
     try testExpr("0");
     try testExpr("\"hello\"");
+
+    try testExpr("comptime false");
+    try testExpr("comptime 0");
+    try testExpr("comptime \"hello\"");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
