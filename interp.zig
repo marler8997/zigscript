@@ -85,10 +85,7 @@ const Expr = BoolOrExpr;
 
 // BoolOrExpr <- BoolAndExpr (KEYWORD_or BoolAndExpr)*
 fn BoolOrExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-
-    const first_expr_end = try BoolAndExpr(src, start, null) orelse return null;
-    if (vm_opt) |vm|
-        std.debug.assert(first_expr_end == try BoolAndExpr(src, start, vm));
+    const first_expr_end = try BoolAndExpr(src, start, vm_opt) orelse return null;
 
     var off = first_expr_end;
     while (true) {
@@ -108,10 +105,7 @@ fn BoolOrExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 
 // BoolAndExpr <- CompareExpr (KEYWORD_and CompareExpr)*
 fn BoolAndExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-
-    const first_expr_end = try CompareExpr(src, start, null) orelse return null;
-    if (vm_opt) |vm|
-        std.debug.assert(first_expr_end == try CompareExpr(src, start, vm));
+    const first_expr_end = try CompareExpr(src, start, vm_opt) orelse return null;
 
     var off = first_expr_end;
     while (true) {
@@ -131,9 +125,7 @@ fn BoolAndExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 
 // CompareExpr <- BitwiseExpr (CompareOp BitwiseExpr)?
 fn CompareExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    const first_expr_end = try BitwiseExpr(src, start, null) orelse return null;
-    if (vm_opt) |vm|
-        std.debug.assert(first_expr_end == try BitwiseExpr(src, start, vm));
+    const first_expr_end = try BitwiseExpr(src, start, vm_opt) orelse return null;
 
     var off = first_expr_end;
     while (true) {
@@ -159,9 +151,7 @@ const BitShiftExpr = AdditionExpr; // TODO
 
 // AdditionExpr <- MultiplyExpr (AdditionOp MultiplyExpr)*
 fn AdditionExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    const first_expr_end = try MultiplyExpr(src, start, null) orelse return null;
-    if (vm_opt) |vm|
-        std.debug.assert(first_expr_end == try MultiplyExpr(src, start, vm));
+    const first_expr_end = try MultiplyExpr(src, start, vm_opt) orelse return null;
 
     var off = first_expr_end;
     while (true) {
@@ -181,9 +171,7 @@ fn AdditionExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize 
 
 // MultiplyExpr <- PrefixExpr (MultiplyOp PrefixExpr)*
 fn MultiplyExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    const first_expr_end = try PrefixExpr(src, start, null) orelse return null;
-    if (vm_opt) |vm|
-        std.debug.assert(first_expr_end == try PrefixExpr(src, start, vm));
+    const first_expr_end = try PrefixExpr(src, start, vm_opt) orelse return null;
 
     var off = first_expr_end;
     while (true) {
@@ -215,9 +203,8 @@ fn PrefixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
         }
     };
 
-    const expr_end = try PrimaryExpr(src, prefix_end, null) orelse return null;
+    const expr_end = try PrimaryExpr(src, prefix_end, vm_opt) orelse return null;
     if (vm_opt) |vm| {
-        std.debug.assert(expr_end == try PrimaryExpr(src, prefix_end, vm));
         try applyPrefixOps(src, start, op_count, vm);
     }
     return expr_end;
@@ -258,13 +245,13 @@ fn PrimaryExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
                 if (BlockLabel(src, start, null)) |end| break :blk end;
                 break :blk start;
             };
-            if (try LoopExpr(src, loop_expr_start, null)) |loop_end| {
+            if (try LoopExpr(src, loop_expr_start, vm_opt)) |loop_end| {
                 _ = loop_end;
                 @panic("TODO: loop expr");
             }
         }
 
-        if (try Block(src, start, null)) |block_end| {
+        if (try Block(src, start, vm_opt)) |block_end| {
             _ = block_end;
             @panic("Block PrimaryExpr not implemented");
         }
@@ -298,11 +285,10 @@ fn LoopExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
         break :blk start;
     };
 
-    _ = vm_opt;
-    if (try ForExpr(src, loop_start, null)) |for_end| {
+    if (try ForExpr(src, loop_start, vm_opt)) |for_end| {
         _ = for_end;
         @panic("todo: ForExpr");
-    } else if (try WhileExpr(src, loop_start, null)) |while_end| {
+    } else if (try WhileExpr(src, loop_start, vm_opt)) |while_end| {
         _ = while_end;
         @panic("todo: WhileExpr");
     } else return null;
