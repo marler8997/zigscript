@@ -161,6 +161,14 @@ pub fn main() !void {
 
     try testError("'a'", "not implemented");
     try testError(".a", "not implemented");
+
+    try testExpr("@assert((true))");
+    try testExpr("@assert(((true)))");
+    try testError("a", "not implemented");
+    try testExpr("false");
+    try testExpr("true");
+    try testExpr("0");
+    try testExpr("\"hello\"");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -216,7 +224,7 @@ pub const Vm = struct {
         self.stack.deinit(self.allocator);
     }
 
-    fn tokenError(self: *Vm, token_pos: usize, token_error: TokenError) error{Vm} {
+    pub fn tokenError(self: *Vm, token_pos: usize, token_error: TokenError) error{Vm} {
         std.debug.assert(self.err == null);
         self.err = .{ .pos = token_pos, .kind = .{ .token = token_error } };
         return error.Vm;
@@ -230,6 +238,18 @@ pub const Vm = struct {
             },
         };
         return error.Vm;
+    }
+
+    pub fn pushBlockLabel(self: *Vm, loc: std.zig.Token.Loc) void {
+        _ = self;
+        _ = loc;
+        @panic("todo");
+    }
+
+    pub fn popBlockLabel(self: *Vm, loc: std.zig.Token.Loc) void {
+        _ = self;
+        _ = loc;
+        @panic("todo");
     }
 
     pub fn push_bool(self: *Vm, val: bool) void {
