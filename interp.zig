@@ -316,6 +316,30 @@ fn WhileExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 
 // CurlySuffixExpr <- TypeExpr InitList?
 fn CurlySuffixExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const expr_end = try TypeExpr(src, start, vm_opt) orelse return null;
+    if (try InitList(src, expr_end, vm_opt)) |init_list_end|
+        return init_list_end;
+    return expr_end;
+}
+
+fn InitList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const token = lex(src, start);
+    if (token.tag != .l_brace)
+        return null;
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// TypeExpr <- PrefixTypeOp* ErrorUnionExpr
+fn TypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    var off = start;
+    while (true) {
+        off = try PrefixTypeOp(src, off, vm_opt) orelse break;
+    }
+    return ErrorUnionExpr(src, off, vm_opt);
+}
+
+fn ErrorUnionExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const token = lex(src, start);
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -407,6 +431,31 @@ fn BlockLabel(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
     return colon_token.loc.end;
 }
 
+// PrefixTypeOp
+//     <- QUESTIONMARK
+//      / KEYWORD_anyframe MINUSRARROW
+//      / SliceTypeStart (ByteAlign / AddrSpace / KEYWORD_const / KEYWORD_volatile / KEYWORD_allowzero)*
+//      / PtrTypeStart (AddrSpace / KEYWORD_align LPAREN Expr (COLON Expr COLON Expr)? RPAREN / KEYWORD_const / KEYWORD_volatile / KEYWORD_allowzero)*
+//      / ArrayTypeStart
+fn PrefixTypeOp(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+    const first_token = lex(src, start);
+    if (first_token.tag == .question_mark) {
+        if (vm_opt) |vm|
+            try vm.applyOptional(first_token.loc.start);
+        return first_token.loc.end;
+    } else if (first_token.tag == .keyword_anyframe) {
+        @panic("todo");
+    } else if (try SliceTypeStart(src, start, vm_opt)) |slice_type_end| {
+        _ = slice_type_end;
+        @panic("todo");
+    } else if (try PtrTypeStart(src, start, vm_opt)) |ptr_type_end| {
+        _ = ptr_type_end;
+        @panic("todo");
+    } else if (try ArrayTypeStart(src, start, vm_opt)) |end| {
+        return end;
+    } else return null;
+}
+
 // FnCallArguments <- LPAREN ExprList RPAREN
 fn FnCallArguments(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
     const expr_list_start = blk: {
@@ -428,6 +477,40 @@ fn FnCallArguments(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
         std.debug.assert(new_end == expr_list_end);
     }
     return r_paren_token.loc.end;
+}
+
+// SliceTypeStart <- LBRACKET (COLON Expr)? RBRACKET
+fn SliceTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+    const token = lex(src, start);
+    if (token.tag != .l_bracket)
+        return null;
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// PtrTypeStart
+//     <- ASTERISK
+//      / ASTERISK2
+//      / LBRACKET ASTERISK (LETTERC / COLON Expr)? RBRACKET
+fn PtrTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+    const token = lex(src, start);
+    if (token.tag == .asterisk) {
+        if (vm_opt) |vm| try vm.applyPtrType(token.loc.start);
+        return token.loc.end;
+    } else if (token.tag == .asterisk_asterisk) {
+        @panic("what is the '**' prefix type operator?");
+    } else if (token.tag == .l_bracket) {
+        @panic("todo");
+    } else return null;
+}
+
+// ArrayTypeStart <- LBRACKET Expr (COLON Expr)? RBRACKET
+fn ArrayTypeStart(src: [:0]const u8, start: usize, vm_opt: ?*Vm) !?usize {
+    const token = lex(src, start);
+    if (token.tag != .l_bracket)
+        return null;
+    _ = vm_opt;
+    @panic("todo");
 }
 
 // ExprList <- (Expr COMMA)* Expr?

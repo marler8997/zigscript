@@ -154,6 +154,9 @@ pub fn main() !void {
     try testError("@assert(-\"a\")", "negation of type 'string'");
     try testExpr("@assert(0 - 1 == -1)");
     try testExpr("@assert(-123 == -100 - 23)");
+
+    try testError("@assert(?0)", "not implemented");
+    try testError("@assert(??0)", "not implemented");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -482,6 +485,16 @@ pub const Vm = struct {
                 self.stack.appendAssumeCapacity(.{ .number = value.number });
             },
         }
+    }
+
+    pub fn applyOptional(self: *Vm, op_loc: usize) error{Vm}!void {
+        return self.tokenError(op_loc, .not_implemented);
+    }
+
+    pub fn applyPtrType(self: *Vm, op_loc: usize) error{Vm}!void {
+        _ = self;
+        _ = op_loc;
+        @panic("todo");
     }
 };
 
