@@ -177,6 +177,17 @@ pub fn main() !void {
     try testSrc("//! a doc comment");
     try testSrcError("fn() void;", "not implemented");
     try testSrcError("fn foo() void;", "not implemented");
+
+    try testError("@assert(void == \"a\")", "cannot compare strings with ==");
+    try testError("@assert(\"a\" == void)", "cannot compare strings with ==");
+
+    try testError("@assert(void == false)", "incompatible types: 'type' and 'bool'");
+    try testError("@assert(false == void)", "incompatible types: 'bool' and 'type'");
+    try testError("@assert(void == 0)", "incompatible types: 'type' and 'number'");
+    try testError("@assert(0 == void)", "incompatible types: 'number' and 'type'");
+    try testError("@assert(void < void)", "operator < not allowed for type 'type'");
+    try testExpr("@assert(void == void)");
+    try testExpr("@assert(!(void != void))");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -313,6 +324,10 @@ pub const Vm = struct {
         return self.tokenError(token.loc.start, .not_implemented);
     }
 
+    pub fn pushVoidType(self: *Vm) void {
+        self.stack.append(self.allocator, .{ .type = .void }) catch |e| oom(e);
+    }
+
     pub fn pushFunction(self: *Vm, fn_loc: usize, id: ?std.zig.Token, param_stack_pos: usize) error{Vm}!void {
         _ = id;
         _ = param_stack_pos;
@@ -389,6 +404,7 @@ pub const Vm = struct {
                 .bool => |v| try self.compareBool(op, op_loc, v, rhs),
                 .number => |v| try self.compareNumber(op, op_loc, v, rhs),
                 .string => unreachable,
+                .type => |v| try self.compareType(op, op_loc, v, rhs),
             }
         });
     }
@@ -426,6 +442,23 @@ pub const Vm = struct {
             },
         }
         return lhs.toConst().order(rhs.toConst()).compare(op);
+    }
+
+    pub fn compareType(self: *Vm, op: std.math.CompareOperator, op_loc: usize, lhs: Value.Type, rhs_val: Value) error{Vm}!bool {
+        const rhs = switch (rhs_val) {
+            .type => |rhs| rhs,
+            .string => unreachable,
+            else => |rhs_type| return self.generalError(
+                op_loc, "incompatible types: 'type' and '{s}'", .{rhs_type.error_desc()},
+            ),
+        };
+        return switch (op) {
+            .eq => lhs.equals(rhs),
+            .neq => !lhs.equals(rhs),
+            else => self.generalError(
+                op_loc, "operator {s} not allowed for type 'type'", .{compareOpStr(op)},
+            ),
+        };
     }
 
     pub fn additionOp(self: *Vm, op: AdditionOp, op_loc: usize) error{Vm}!void {
@@ -479,8 +512,10 @@ pub const Vm = struct {
                     return;
                 },
                 .string => {},
+                .type => {},
             },
             .string => {},
+            .type => {},
         }
         return self.generalError(
             op_loc,
@@ -558,11 +593,13 @@ const ValueType = enum {
     bool,
     number,
     string,
+    type,
     pub fn error_desc(self: ValueType) []const u8 {
         return switch (self) {
             .bool => "bool",
             .number => "number",
             .string => "string",
+            .type => "type",
         };
     }
 };
@@ -571,6 +608,22 @@ const Value = union(ValueType) {
     bool: bool,
     number: std.math.big.int.Mutable,
     string: []const u8,
+    type: Type,
+
+    const Type = union(enum) {
+        void: void,
+        pub fn deinit(self: Type, allocator: std.mem.Allocator) void {
+            _ = allocator;
+            switch (self) {
+                .void => {},
+            }
+        }
+        pub fn equals(self: Type, rhs: Type) bool {
+            switch (self) {
+                .void => return rhs == .void,
+            }
+        }
+    };
 
     pub fn deinitAndInvalidate(self: *Value) void {
         self.deinit();
@@ -581,6 +634,7 @@ const Value = union(ValueType) {
             .bool => {},
             .number => |n| allocator.free(n.limbs),
             .string => |s| allocator.free(s),
+            .type => |t| t.deinit(allocator),
         }
     }
     pub fn error_desc(self: Value) []const u8 {

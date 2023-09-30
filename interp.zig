@@ -599,6 +599,8 @@ fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usi
                 vm.push_bool(false);
             } else if (std.mem.eql(u8, slice, "true")) {
                 vm.push_bool(true);
+            } else if (std.mem.eql(u8, slice, "void")) {
+                vm.pushVoidType();
             } else {
                 return vm.tokenError(first_token.loc.start, .not_implemented);
             }
