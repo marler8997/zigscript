@@ -180,6 +180,9 @@ pub fn main() !void {
     try testExpr("fn foo(bar,)");
     try testExpr("fn foo(bar,baz)");
     try testExpr("fn foo(bar,baz,)");
+
+    try testSrc("fn foo();");
+    try testSrc("fn foo(){ }");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -229,9 +232,9 @@ pub const Vm = struct {
     current_function: ?Function = null,
 
     const Function = struct {
-        id: ?std.zig.Token,
-        params: std.ArrayListUnmanaged(std.zig.Token) = .{},
-        done: bool = false,
+        id: ?std.zig.Token.Loc,
+        params: std.ArrayListUnmanaged(std.zig.Token.Loc) = .{},
+        params_done: bool = false,
     };
 
     pub fn deinit(self: *Vm) void {
@@ -322,20 +325,50 @@ pub const Vm = struct {
         return self.tokenError(token.loc.start, .not_implemented);
     }
 
-    pub fn functionProtoStart(self: *Vm, id: ?std.zig.Token) void {
+    pub fn functionProtoStart(self: *Vm, id: ?std.zig.Token.Loc) void {
         if (self.current_function) |_|
             @panic("function proto inside function proto not implemented");
         self.current_function = .{ .id = id };
     }
-    pub fn functionProtoEnd(self: *Vm) void {
+    pub fn functionProtoEndParams(self: *Vm) void {
         const f = &(self.current_function orelse @panic("codebug"));
-        if (f.done) @panic("codebug");
-        f.done = true;
+        if (f.params_done) @panic("codebug");
+        f.params_done = true;
     }
-    pub fn functionProtoParam(self: *Vm, id: std.zig.Token) void {
+    pub fn functionProtoParam(self: *Vm, id: std.zig.Token.Loc) void {
         const f = &(self.current_function orelse @panic("codebug"));
-        if (f.done) @panic("codebug");
+        if (f.params_done) @panic("codebug");
         f.params.append(self.allocator, id) catch |e| oom(e);
+    }
+
+    pub fn functionProtoNoBody(self: *Vm) void {
+        const f = &(self.current_function orelse @panic("codebug"));
+        if (!f.params_done) @panic("codebug");
+        self.stack.append(self.allocator, .{ .function = .{
+            .id = f.id,
+            .params = f.params.toOwnedSlice(self.allocator) catch |e| oom(e),
+            .body = false,
+        }}) catch |e| oom(e);
+        self.current_function = null;
+    }
+    pub fn functionProtoBodyStart(self: *Vm) void {
+        const f = &(self.current_function orelse @panic("codebug"));
+        if (!f.params_done) @panic("codebug");
+        self.stack.append(self.allocator, .{ .function = .{
+            .id = f.id,
+            .params = f.params.toOwnedSlice(self.allocator) catch |e| oom(e),
+            .body = true,
+        }}) catch |e| oom(e);
+        self.current_function = null;
+    }
+    pub fn functionProtoBodyFailedParse(self: *Vm) void {
+        if (self.stack.items.len == 0) @panic("codebug");
+        const f = self.stack.pop();
+        std.debug.assert(f == .function);
+    }
+    pub fn functionProtoBodyEnd(self: *Vm) void {
+        // TODO: set the last block parsed to the function
+        _ = self;
     }
 
     fn enforceArgCount(self: *Vm, loc: usize, count: usize) error{Vm}!void {
@@ -408,6 +441,7 @@ pub const Vm = struct {
                 .bool => |v| try self.compareBool(op, op_loc, v, rhs),
                 .number => |v| try self.compareNumber(op, op_loc, v, rhs),
                 .string => unreachable,
+                .function => @panic("todo"),
             }
         });
     }
@@ -498,8 +532,10 @@ pub const Vm = struct {
                     return;
                 },
                 .string => {},
+                .function => {},
             },
             .string => {},
+            .function => {},
         }
         return self.generalError(
             op_loc,
@@ -577,11 +613,13 @@ const ValueType = enum {
     bool,
     number,
     string,
+    function,
     pub fn error_desc(self: ValueType) []const u8 {
         return switch (self) {
             .bool => "bool",
             .number => "number",
             .string => "string",
+            .function => "function",
         };
     }
 };
@@ -590,6 +628,7 @@ const Value = union(ValueType) {
     bool: bool,
     number: std.math.big.int.Mutable,
     string: []const u8,
+    function: Function,
 
     pub fn deinitAndInvalidate(self: *Value) void {
         self.deinit();
@@ -600,11 +639,21 @@ const Value = union(ValueType) {
             .bool => {},
             .number => |n| allocator.free(n.limbs),
             .string => |s| allocator.free(s),
+            .function => |f| f.deinit(allocator),
         }
     }
     pub fn error_desc(self: Value) []const u8 {
         return @as(ValueType, self).error_desc();
     }
+
+    const Function = struct {
+        id: ?std.zig.Token.Loc,
+        params: []std.zig.Token.Loc,
+        body: bool,
+        pub fn deinit(self: Function, allocator: std.mem.Allocator) void {
+            allocator.free(self.params);
+        }
+    };
 };
 
 fn ErrorOr(comptime T: type) type {

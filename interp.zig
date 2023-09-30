@@ -119,14 +119,19 @@ fn Decl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
         @panic("todo");
     if (first_token.tag == .keyword_noinline)
         @panic("todo");
-    if (try FnProto(src, start, null)) |fn_proto_end| {
+    if (try FnProto(src, start, vm)) |fn_proto_end| {
         const token = lex(src, fn_proto_end);
         if (token.tag == .semicolon) {
-            const fn_proto_end2 = try FnProto(src, start, vm);
-            std.debug.assert(fn_proto_end == fn_proto_end2);
+            vm.functionProtoNoBody();
             return token.loc.end;
         }
-        @panic("todo");
+        vm.functionProtoBodyStart();
+        const block_end = try Block(src, fn_proto_end, vm) orelse {
+            vm.functionProtoBodyFailedParse();
+            return null;
+        };
+        vm.functionProtoBodyEnd();
+        return block_end;
     }
 
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -179,10 +184,10 @@ fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     };
 
     if (vm_opt) |vm| {
-        vm.functionProtoStart(id);
+        vm.functionProtoStart(if (id) |i| i.loc else null);
         const params_end2 = try ParamDeclList(src, params.start, vm);
         std.debug.assert(params.end == params_end2);
-        vm.functionProtoEnd();
+        vm.functionProtoEndParams();
     }
 
     return end;
@@ -372,13 +377,21 @@ fn PrimaryExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 
 // Block <- LBRACE Statement* RBRACE
 fn Block(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    const statement_start = blk: {
+    var off = blk: {
         const token = lex(src, start);
         if (token.tag != .l_brace) return null;
         break :blk token.loc.end;
     };
+
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK (kinda)
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    {
+        const token = lex(src, off);
+        if (token.tag == .r_brace)
+            return token.loc.end;
+    }
     _ = vm_opt;
-    _ = statement_start;
     @panic("todo: Block");
 }
 
@@ -785,7 +798,7 @@ fn ParamDecl(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     if (token.tag != .identifier) return null;
 
     if (vm_opt) |vm| {
-        vm.functionProtoParam(token);
+        vm.functionProtoParam(token.loc);
     }
     return token.loc.end;
 }
