@@ -193,6 +193,135 @@ fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     return end;
 }
 
+//VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign? AddrSpace? LinkSection?
+fn VarDeclProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
+    const decl: struct { kind: enum {@"const", @"var"}, end: usize} = blk: {
+        const token = lex(src, start);
+        if (token.tag == .keyword_const)
+            break :blk .{ .kind = .@"const", .end = token.loc.end };
+        if (token.tag == .keyword_var)
+            break :blk .{ .kind = .@"var", .end = token.loc.end };
+        return null;
+    };
+    _ = decl;
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// Statement
+//     <- KEYWORD_comptime ComptimeStatement
+//      / KEYWORD_nosuspend BlockExprStatement
+//      / KEYWORD_suspend BlockExprStatement
+//      / KEYWORD_defer BlockExprStatement
+//      / KEYWORD_errdefer Payload? BlockExprStatement
+//      / IfStatement
+//      / LabeledStatement
+//      / SwitchExpr
+//      / VarDeclExprStatement
+fn Statement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    var first_token = lex(src, start);
+
+    if (first_token.tag == .keyword_comptime)
+        @panic("todo");
+    if (first_token.tag == .keyword_nosuspend)
+        @panic("todo");
+    if (first_token.tag == .keyword_suspend)
+        @panic("todo");
+    if (first_token.tag == .keyword_defer)
+        @panic("todo");
+    if (first_token.tag == .keyword_errdefer)
+        @panic("todo");
+    if (try IfStatement(src, start, vm_opt)) |end|
+        return end;
+    if (try SwitchExpr(src, start, vm_opt)) |end|
+        return end;
+    return VarDeclExprStatement(src, start, vm_opt);
+}
+
+// IfStatement
+//     <- IfPrefix BlockExpr ( KEYWORD_else Payload? Statement )?
+//      / IfPrefix AssignExpr ( SEMICOLON / KEYWORD_else Payload? Statement )
+fn IfStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const after_if = try IfPrefix(src, start, null) orelse return null;
+    _ = after_if;
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// LabeledStatement <- BlockLabel? (Block / LoopStatement)
+fn LabeledStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const after_label = blk: {
+        if (try BlockLabel(src, start, vm_opt)) |end|
+            break :blk end;
+        break :blk start;
+    };
+    defer if (vm_opt) |vm| {
+        if (after_label != start) {
+            vm.popBlockLabel();
+        }
+    };
+
+    if (Block(src, after_label, vm_opt)) |end|
+        return end;
+    if (LoopStatement(src, after_label, vm_opt)) |end|
+        return end;
+    return null;
+}
+
+// LoopStatement <- KEYWORD_inline? (ForStatement / WhileStatement)
+fn LoopStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const after_inline = blk: {
+        const token = lex(src, start);
+        if (token.tag == .keyword_inline)
+            break :blk token.loc.end;
+        break :blk start;
+    };
+    if (ForStatement(src, after_inline, vm_opt)) |end|
+        return end;
+    if (WhileStatement(src, after_inline, vm_opt)) |end|
+        return end;
+    return null;
+}
+
+// ForExpr <- ForPrefix Expr (KEYWORD_else Expr)?
+fn ForStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const expr_start = try ForPrefix(src, start, null) orelse return null;
+    _ = expr_start;
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// WhileExpr <- WhilePrefix Expr (KEYWORD_else Payload? Expr)?
+fn WhileStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const expr_start = try WhilePrefix(src, start, null) orelse return null;
+    _ = expr_start;
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// VarDeclExprStatement
+//     <- VarDeclProto (COMMA (VarDeclProto / Expr))* EQUAL Expr SEMICOLON
+//      / Expr (AssignOp Expr / (COMMA (VarDeclProto / Expr))+ EQUAL Expr)? SEMICOLON
+fn VarDeclExprStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    if (VarDeclProto(src, start, null)) |decl_end| {
+        _ = decl_end;
+        @panic("todo");
+    } else if (try Expr(src, start, null)) |expr_end| {
+        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        // GRAMMAR HACK
+        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        const token = lex(src, expr_end);
+        if (token.tag == .semicolon) {
+            if (vm_opt) |vm| {
+                const expr_end2 = try Expr(src, start, vm);
+                std.debug.assert(expr_end2 == expr_end);
+            }
+            return token.loc.end;
+        }
+        @panic("todo");
+    } else return null;
+}
+
 // Expr <- BoolOrExpr
 pub const Expr = BoolOrExpr;
 
@@ -376,23 +505,36 @@ fn PrimaryExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 // IfExpr <- IfPrefix Expr (KEYWORD_else Payload? Expr)?
 
 // Block <- LBRACE Statement* RBRACE
-fn Block(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    var off = blk: {
+pub fn Block(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    var statements_start = blk: {
         const token = lex(src, start);
         if (token.tag != .l_brace) return null;
         break :blk token.loc.end;
     };
 
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK (kinda)
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    {
-        const token = lex(src, off);
-        if (token.tag == .r_brace)
-            return token.loc.end;
+    const statements_end = blk: {
+        var off = statements_start;
+        while (true) {
+            off = try Statement(src, off, null) orelse break :blk off;
+        }
+    };
+
+    const r_brace_token = lex(src, statements_end);
+    if (r_brace_token.tag != .r_brace)
+        return null;
+
+    if (vm_opt) |vm| {
+        // TODO: tell vm we're starting a block
+        var off = statements_start;
+        while (true) {
+            off = try Statement(src, off, vm) orelse break;
+            // TODO: tell vm we finished a statement
+        }
+        std.debug.assert(off == statements_end);
+        // TODO: tell vm we finished a block
     }
-    _ = vm_opt;
-    @panic("todo: Block");
+
+    return r_brace_token.loc.end;
 }
 
 // LoopExpr <- KEYWORD_inline? (ForExpr / WhileExpr)
@@ -656,7 +798,7 @@ fn GroupedExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 
 // IfTypeExpr <- IfPrefix TypeExpr (KEYWORD_else Payload? TypeExpr)?
 fn IfTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    const prefix_end = IfPrefix(src, start, null) orelse return null;
+    const prefix_end = try IfPrefix(src, start, null) orelse return null;
     _ = prefix_end;
     _ = vm_opt;
     @panic("todo");
@@ -804,7 +946,7 @@ fn ParamDecl(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 }
 
 // IfPrefix <- KEYWORD_if LPAREN Expr RPAREN PtrPayload?
-fn IfPrefix(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
+fn IfPrefix(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     {
         var token = lex(src, start);
         if (token.tag != .keyword_if) return null;

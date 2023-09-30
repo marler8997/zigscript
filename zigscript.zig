@@ -183,6 +183,10 @@ pub fn main() !void {
 
     try testSrc("fn foo();");
     try testSrc("fn foo(){ }");
+
+    try testBlock("{}");
+    try testBlock("{@assert(true);}");
+    try testBlockError("{@assert(true);@assert(false);}", "assert failed");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -741,6 +745,47 @@ fn testError(src: [:0]const u8, expected_error: []const u8) !void {
     };
     defer vm.deinit();
     if (interp.Expr(src, 0, &vm)) |_| {
+        std.log.err("src '{s}' unexpectedly didn't have an error", .{src});
+        return error.TestUnexpectedResult;
+    } else |vm_err| switch (vm_err) {
+        error.Vm => {
+            const err = vm.err orelse @panic("vm reported error but has none?");
+            const actual_msg = err.getTestMsg();
+            return std.testing.expectEqualSlices(u8, expected_error, actual_msg);
+        },
+    }
+}
+
+fn testBlock(src: [:0]const u8) !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
+    defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
+    var vm = Vm{
+        .src = src,
+        .allocator = gpa.allocator()
+    };
+    defer vm.deinit();
+    if (interp.Block(src, 0, &vm)) |end| {
+        if (end != src.len) {
+            std.log.err("src '{s}' is not a Block (end={?})", .{src, end});
+        }
+    } else |vm_err| switch (vm_err) {
+        error.Vm => {
+            const err = vm.err orelse @panic("vm reported error but has none?");
+            const error_msg = err.getTestMsg();
+            std.log.err("src '{s}' had unexpected error: {s}", .{src, error_msg});
+            return error.TestUnexpectedResult;
+        },
+    }
+}
+fn testBlockError(src: [:0]const u8, expected_error: []const u8) !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
+    defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
+    var vm = Vm{
+        .src = src,
+        .allocator = gpa.allocator()
+    };
+    defer vm.deinit();
+    if (interp.Block(src, 0, &vm)) |_| {
         std.log.err("src '{s}' unexpectedly didn't have an error", .{src});
         return error.TestUnexpectedResult;
     } else |vm_err| switch (vm_err) {
