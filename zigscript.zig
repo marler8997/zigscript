@@ -175,6 +175,8 @@ pub fn main() !void {
     try testExpr("comptime \"hello\"");
 
     try testSrc("//! a doc comment");
+    try testSrcError("fn() void;", "not implemented");
+    try testSrcError("fn foo() void;", "not implemented");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -248,6 +250,10 @@ pub const Vm = struct {
         return error.Vm;
     }
 
+    pub fn getStackPos(self: Vm) usize {
+        return self.stack.items.len;
+    }
+
     pub fn pushBlockLabel(self: *Vm, loc: std.zig.Token.Loc) void {
         _ = self;
         _ = loc;
@@ -305,6 +311,12 @@ pub const Vm = struct {
 
     pub fn pushDotIdentifier(self: *Vm, token: std.zig.Token) error{Vm}!void {
         return self.tokenError(token.loc.start, .not_implemented);
+    }
+
+    pub fn pushFunction(self: *Vm, fn_loc: usize, id: ?std.zig.Token, param_stack_pos: usize) error{Vm}!void {
+        _ = id;
+        _ = param_stack_pos;
+        return self.tokenError(fn_loc, .not_implemented);
     }
 
     fn enforceArgCount(self: *Vm, loc: usize, count: usize) error{Vm}!void {
@@ -681,4 +693,24 @@ fn testSrc(src: [:0]const u8) !void {
     };
     defer vm.deinit();
     try interp.Root(src, 0, &vm);
+}
+
+fn testSrcError(src: [:0]const u8, expected_error: []const u8) !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
+    defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
+    var vm = Vm{
+        .src = src,
+        .allocator = gpa.allocator()
+    };
+    defer vm.deinit();
+    if (interp.Root(src, 0, &vm)) |_| {
+        std.log.err("src '{s}' unexpectedly didn't have an error", .{src});
+        return error.TestUnexpectedResult;
+    } else |vm_err| switch (vm_err) {
+        error.Vm => {
+            const err = vm.err orelse @panic("vm reported error but has none?");
+            const actual_msg = err.getTestMsg();
+            return std.testing.expectEqualSlices(u8, expected_error, actual_msg);
+        },
+    }
 }

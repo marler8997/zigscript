@@ -52,16 +52,7 @@ pub fn ContainerMembers(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!usiz
     std.debug.panic("todo: ContainerMembers token {s}", .{@tagName(token.tag)});
 }
 
-// ContainerDeclarations
-//     <- TestDecl ContainerDeclarations
-//      / ComptimeDecl ContainerDeclarations
-//      / doc_comment? KEYWORD_pub? Decl ContainerDeclarations
-//      /
-//
-// REWRITTEN AS:
-//
-// ContainerDeclarations
-//     <- (TestDecl / ComptimeDecl / doc_comment? KEYWORD_pub? Decl)*
+// ContainerDeclarations <- (TestDecl / ComptimeDecl / doc_comment? KEYWORD_pub? Decl)*
 pub fn ContainerDeclarations(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!usize {
 
     var off = start;
@@ -118,14 +109,32 @@ fn ComptimeDecl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
 //      / (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? GlobalVarDecl
 //      / KEYWORD_usingnamespace Expr SEMICOLON
 fn Decl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
+    const first_token = lex(src, start);
+
+    if (first_token.tag == .keyword_export)
+        @panic("todo");
+    if (first_token.tag == .keyword_extern)
+        @panic("todo");
+    if (first_token.tag == .keyword_inline)
+        @panic("todo");
+    if (first_token.tag == .keyword_noinline)
+        @panic("todo");
+    if (try FnProto(src, start, null)) |fn_proto_end| {
+        const token = lex(src, fn_proto_end);
+        if (token.tag == .semicolon) {
+            const fn_proto_end2 = try FnProto(src, start, vm);
+            std.debug.assert(fn_proto_end == fn_proto_end2);
+            return token.loc.end;
+        }
+        @panic("todo");
+    }
+
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     // GRAMMAR HACK
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    const token = lex(src, start);
-    if (token.tag == .eof) return null;
+    if (first_token.tag == .eof) return null;
 
-    _ = vm;
-    std.debug.panic("todo: Decl token {s}", .{@tagName(token.tag)});
+    std.debug.panic("todo: Decl token {s}", .{@tagName(first_token.tag)});
 }
 
 // FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? AddrSpace? LinkSection? CallConv? EXCLAMATIONMARK? TypeExpr
@@ -135,9 +144,91 @@ fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
         if (token.tag != .keyword_fn) return null;
         break :blk token.loc.end;
     };
-    _ = after_fn;
-    _ = vm_opt;
-    @panic("todo");
+
+    var id: ?std.zig.Token = null;
+    const params: struct { start: usize, end: usize } = blk: {
+        var token = lex(src, after_fn);
+        var off = after_fn;
+        if (token.tag == .identifier) {
+            id = token;
+            off = token.loc.end;
+            token = lex(src, off);
+        }
+
+        if (token.tag != .l_paren)
+            return null;
+
+        break :blk .{
+            .start = token.loc.end,
+            .end = try ParamDeclList(src, token.loc.end, null),
+        };
+    };
+
+    var off = blk: {
+        const token = lex(src, params.end);
+        if (token.tag != .r_paren) return null;
+        break :blk token.loc.end;
+    };
+
+    const byte_align_off: ?usize = blk: {
+        if (try ByteAlign(src, off, null)) |end| {
+            const save = off;
+            off = end;
+            break :blk save;
+        }
+        break :blk null;
+    };
+    const addr_space_off: ?usize = blk: {
+        if (try AddrSpace(src, off, null)) |end| {
+            const save = off;
+            off = end;
+            break :blk save;
+        }
+        break :blk null;
+    };
+    const link_section_off: ?usize = blk: {
+        if (try LinkSection(src, off, null)) |end| {
+            const save = off;
+            off = end;
+            break :blk save;
+        }
+        break :blk null;
+    };
+    const call_conv_off: ?usize = blk: {
+        if (try CallConv(src, off, null)) |end| {
+            const save = off;
+            off = end;
+            break :blk save;
+        }
+        break :blk null;
+    };
+    const is_error_union = blk: {
+        const token = lex(src, off);
+        if (token.tag == .bang) {
+            off = token.loc.end;
+            break :blk true;
+        }
+        break :blk false;
+    };
+
+    const stack_pos: ?usize = if (vm_opt) |vm| vm.getStackPos() else null;
+    const ret_type_off = off;
+    const ret_type_end = try TypeExpr(src, ret_type_off, vm_opt) orelse return null;
+
+    if (vm_opt) |vm| {
+        const params_end2 = try ParamDeclList(src, params.start, vm);
+        std.debug.assert(params.end == params_end2);
+
+        try vm.pushFunction(start, id, stack_pos.?);
+
+        if (byte_align_off) |_| @panic("todo");
+        if (addr_space_off) |_| @panic("todo");
+        if (link_section_off) |_| @panic("todo");
+        if (call_conv_off) |_| @panic("todo");
+        if (is_error_union) @panic("todo");
+    }
+
+    return ret_type_end;
 }
 
 // Expr <- BoolOrExpr
@@ -690,6 +781,50 @@ fn BlockLabel(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
     return colon_token.loc.end;
 }
 
+// LinkSection <- KEYWORD_linksection LPAREN Expr RPAREN
+fn LinkSection(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    {
+        var token = lex(src, start);
+        if (token.tag != .keyword_linksection) return null;
+    }
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// AddrSpace <- KEYWORD_addrspace LPAREN Expr RPAREN
+fn AddrSpace(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    {
+        var token = lex(src, start);
+        if (token.tag != .keyword_addrspace) return null;
+    }
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// CallConv <- KEYWORD_callconv LPAREN Expr RPAREN
+fn CallConv(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    {
+        var token = lex(src, start);
+        if (token.tag != .keyword_callconv) return null;
+    }
+    _ = vm_opt;
+    @panic("todo");
+}
+
+
+// ParamDecl
+//     <- doc_comment? (KEYWORD_noalias / KEYWORD_comptime)? (IDENTIFIER COLON)? ParamType
+//      / DOT3
+fn ParamDecl(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // GRAMMAR HACK
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    const token = lex(src, start);
+    if (token.tag == .r_paren) return null;
+    _ = vm_opt;
+    @panic("todo");
+}
+
 // IfPrefix <- KEYWORD_if LPAREN Expr RPAREN PtrPayload?
 fn IfPrefix(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
     {
@@ -901,18 +1036,38 @@ fn ContainerDeclType(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?u
     } else return null;
 }
 
+// ByteAlign <- KEYWORD_align LPAREN Expr RPAREN
+fn ByteAlign(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const after_align = blk: {
+        const token = lex(src, start);
+        if (token.tag != .keyword_align)
+            return null;
+        break :blk token.loc.end;
+    };
+    _ = after_align;
+    _ = vm_opt;
+    @panic("todo");
+}
+
+// ParamDeclList <- (ParamDecl COMMA)* ParamDecl?
+fn ParamDeclList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!usize {
+    var off = start;
+    while (try ParamDecl(src, off, vm_opt)) |expr_end| {
+        const token = lex(src, expr_end);
+        if (token.tag != .comma)
+            return expr_end;
+        off = token.loc.end;
+    }
+    return off;
+}
+
 // ExprList <- (Expr COMMA)* Expr?
 fn ExprList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!usize {
     var off = start;
-    while (try Expr(src, off, null)) |expr_end| {
-        if (vm_opt) |vm| {
-            const new_end = try Expr(src, off, vm);
-            std.debug.assert(new_end == expr_end);
-        }
-        off = expr_end;
-        const token = lex(src, off);
+    while (try Expr(src, off, vm_opt)) |expr_end| {
+        const token = lex(src, expr_end);
         if (token.tag != .comma)
-            break;
+            return expr_end;
         off = token.loc.end;
     }
     return off;
