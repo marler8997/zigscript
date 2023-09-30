@@ -20,3 +20,10 @@ to be designed for use cases that Zig would already be a good fit for.
 For this reason, maybe ZigScript shouldn't support explicit types?  The idea here is that
 if it's worth your time to annotate your program with types, maybe you should be using
 Zig instead?
+
+* Interpolated strings?
+
+```
+const x = 0;
+@out(i"x is {x}");
+```
