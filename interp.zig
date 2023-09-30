@@ -137,7 +137,15 @@ fn Decl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
     std.debug.panic("todo: Decl token {s}", .{@tagName(first_token.tag)});
 }
 
+// Original Zig Rule:
+// -------------------
 // FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? AddrSpace? LinkSection? CallConv? EXCLAMATIONMARK? TypeExpr
+//
+// Modified ZigScript Rule:
+// -------------------
+// FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN
+//
+// Removed return type modifiers and TypeExpr (ZigScript not doing types for now)
 fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     const after_fn = blk: {
         const token = lex(src, start);
@@ -164,71 +172,20 @@ fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
         };
     };
 
-    var off = blk: {
+    const end = blk: {
         const token = lex(src, params.end);
         if (token.tag != .r_paren) return null;
         break :blk token.loc.end;
     };
 
-    const byte_align_off: ?usize = blk: {
-        if (try ByteAlign(src, off, null)) |end| {
-            const save = off;
-            off = end;
-            break :blk save;
-        }
-        break :blk null;
-    };
-    const addr_space_off: ?usize = blk: {
-        if (try AddrSpace(src, off, null)) |end| {
-            const save = off;
-            off = end;
-            break :blk save;
-        }
-        break :blk null;
-    };
-    const link_section_off: ?usize = blk: {
-        if (try LinkSection(src, off, null)) |end| {
-            const save = off;
-            off = end;
-            break :blk save;
-        }
-        break :blk null;
-    };
-    const call_conv_off: ?usize = blk: {
-        if (try CallConv(src, off, null)) |end| {
-            const save = off;
-            off = end;
-            break :blk save;
-        }
-        break :blk null;
-    };
-    const is_error_union = blk: {
-        const token = lex(src, off);
-        if (token.tag == .bang) {
-            off = token.loc.end;
-            break :blk true;
-        }
-        break :blk false;
-    };
-
-    const stack_pos: ?usize = if (vm_opt) |vm| vm.getStackPos() else null;
-    const ret_type_off = off;
-    const ret_type_end = try TypeExpr(src, ret_type_off, vm_opt) orelse return null;
-
     if (vm_opt) |vm| {
+        vm.functionProtoStart(id);
         const params_end2 = try ParamDeclList(src, params.start, vm);
         std.debug.assert(params.end == params_end2);
-
-        try vm.pushFunction(start, id, stack_pos.?);
-
-        if (byte_align_off) |_| @panic("todo");
-        if (addr_space_off) |_| @panic("todo");
-        if (link_section_off) |_| @panic("todo");
-        if (call_conv_off) |_| @panic("todo");
-        if (is_error_union) @panic("todo");
+        vm.functionProtoEnd();
     }
 
-    return ret_type_end;
+    return end;
 }
 
 // Expr <- BoolOrExpr
@@ -599,8 +556,6 @@ fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usi
                 vm.push_bool(false);
             } else if (std.mem.eql(u8, slice, "true")) {
                 vm.push_bool(true);
-            } else if (std.mem.eql(u8, slice, "void")) {
-                vm.pushVoidType();
             } else {
                 return vm.tokenError(first_token.loc.start, .not_implemented);
             }
@@ -814,17 +769,25 @@ fn CallConv(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 }
 
 
+// Original Zig Rule:
+// -------------------
 // ParamDecl
 //     <- doc_comment? (KEYWORD_noalias / KEYWORD_comptime)? (IDENTIFIER COLON)? ParamType
 //      / DOT3
+//
+// Modified ZigScript Rule:
+// -------------------
+// ParamDecl <- IDENTIFIER
+//
+// ZigScript is leaving out parameter types for now
 fn ParamDecl(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     const token = lex(src, start);
-    if (token.tag == .r_paren) return null;
-    _ = vm_opt;
-    @panic("todo");
+    if (token.tag != .identifier) return null;
+
+    if (vm_opt) |vm| {
+        vm.functionProtoParam(token);
+    }
+    return token.loc.end;
 }
 
 // IfPrefix <- KEYWORD_if LPAREN Expr RPAREN PtrPayload?
