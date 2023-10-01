@@ -1,0 +1,4 @@
+#!/usr/bin/env zigscript
+{
+   @out("Hello, World!\n");
+}

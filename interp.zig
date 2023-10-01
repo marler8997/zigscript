@@ -12,7 +12,7 @@ fn applyPrefixOps(src: [:0]const u8, start: usize, op_count: u16, vm: *Vm) error
     }
 }
 
-fn lex(src: [:0]const u8, off: usize) std.zig.Token {
+pub fn lex(src: [:0]const u8, off: usize) std.zig.Token {
     std.debug.assert(off <= src.len);
     var tokenizer = std.zig.Tokenizer{
         .buffer = src,
