@@ -188,6 +188,7 @@ pub fn main() !void {
     try testBlock("{@assert(true);}");
     try testBlockError("{@assert(true);@assert(false);}", "assert failed");
     try testBlock("{const a = 0;}");
+    try testBlock("{const a = \"hello\";}");
     try testError("@assert(a == 0)", "undeclared identifier");
     try testBlockError("{const a = 0;const a = 0;}", "redeclaration");
     try testBlock("{const a = 0;@assert(a == 0);}");
@@ -715,6 +716,7 @@ const Value = union(ValueType) {
                 const copy = n.toManaged(allocator).clone() catch |e| oom(e);
                 return .{ .number = copy.toMutable() };
             },
+            .string => |s| return .{ .string = allocator.dupe(u8, s) catch |e| oom(e) },
             else => @panic("todo"),
         }
     }
