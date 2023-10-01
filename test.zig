@@ -193,6 +193,8 @@ pub fn main() !void {
     try testBlockError("{const a = 0;const a = 0;}", "redeclaration");
     try testBlock("{const a = 0;@assert(a == 0);}");
     try testBlock("{var a = 0;@assert(a == 0);}");
+    try testBlock("{var a = 1;@assert(a + 2 == 3);}");
+    try testBlock("{var a = 3;@assert(12 == a * 4);}");
 }
 
 fn testExpr(src: [:0]const u8) !void {
