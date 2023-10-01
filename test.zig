@@ -192,6 +192,7 @@ pub fn main() !void {
     try testError("@assert(a == 0)", "undeclared identifier");
     try testBlockError("{const a = 0;const a = 0;}", "redeclaration");
     try testBlock("{const a = 0;@assert(a == 0);}");
+    try testBlock("{var a = 0;@assert(a == 0);}");
 }
 
 fn testExpr(src: [:0]const u8) !void {

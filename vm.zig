@@ -45,12 +45,19 @@ const VmError = struct {
     }
 };
 
+pub const Mutability = enum { mutable, @"const" };
+
+const ValueEntry = struct {
+    mutability: Mutability,
+    value: Value,
+};
+
 const Scope = struct {
-    map: std.StringHashMapUnmanaged(Value) = .{},
+    map: std.StringHashMapUnmanaged(ValueEntry) = .{},
     pub fn deinit(self: *Scope, allocator: std.mem.Allocator) void {
         var it = self.map.iterator();
         while (it.next()) |pair| {
-            pair.value_ptr.deinit(allocator);
+            pair.value_ptr.value.deinit(allocator);
         }
         self.map.deinit(allocator);
     }
@@ -171,7 +178,7 @@ pub const Vm = struct {
         return self.tokenError(token.loc.start, .not_implemented);
     }
 
-    fn scopeLookup(self: *Vm, slice: []const u8) ?*const Value {
+    fn scopeLookup(self: *Vm, slice: []const u8) ?*const ValueEntry {
         var i: usize = self.scope_stack.items.len;
         while (i > 0) {
             i -= 1;
@@ -182,19 +189,22 @@ pub const Vm = struct {
         return null;
     }
 
-    pub fn declareAndAssignStackTop(self: *Vm, id_loc: std.zig.Token.Loc) error{Vm}!void {
+    pub fn declareAndAssignStackTop(self: *Vm, mutability: Mutability, id_loc: std.zig.Token.Loc) error{Vm}!void {
         const slice = self.src[id_loc.start .. id_loc.end];
         if (self.scopeLookup(slice)) |_| return self.tokenError(id_loc.start, .redeclaration);
         if (self.scope_stack.items.len == 0) @panic("todo: assign var in global scope");
         const scope = &self.scope_stack.items[self.scope_stack.items.len-1];
         const value = self.stack.popOrNull() orelse @panic("codebug");
-        scope.map.putNoClobber(self.allocator, slice, value) catch |e| oom(e);
+        scope.map.putNoClobber(self.allocator, slice, .{
+            .mutability = mutability,
+            .value = value,
+        }) catch |e| oom(e);
     }
 
     pub fn pushID(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
         const slice = self.src[loc.start..loc.end];
-        const value = self.scopeLookup(slice) orelse return self.tokenError(loc.start, .undeclared_identifier);
-        self.stack.append(self.allocator, value.clone(self.allocator)) catch |e| oom(e);
+        const value_entry = self.scopeLookup(slice) orelse return self.tokenError(loc.start, .undeclared_identifier);
+        self.stack.append(self.allocator, value_entry.value.clone(self.allocator)) catch |e| oom(e);
     }
 
     pub fn functionProtoStart(self: *Vm, id: ?std.zig.Token.Loc) void {

@@ -193,6 +193,11 @@ fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     return end;
 }
 
+const VarDeclProtoResult = struct {
+    mutability: zigscript.vm.Mutability,
+    id: std.zig.Token.Loc,
+};
+
 // Original Zig Rule:
 // -------------------
 // VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign? AddrSpace? LinkSection?
@@ -202,18 +207,18 @@ fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 // VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER
 //
 // Not allowing type designation for now.
-fn VarDeclProto(src: [:0]const u8, start: usize) ?std.zig.Token.Loc {
-    const decl: struct { kind: enum {@"const", @"var"}, end: usize} = blk: {
+fn VarDeclProto(src: [:0]const u8, start: usize) ?VarDeclProtoResult {
+    const decl: struct { mutability: zigscript.vm.Mutability, end: usize} = blk: {
         const token = lex(src, start);
         if (token.tag == .keyword_const)
-            break :blk .{ .kind = .@"const", .end = token.loc.end };
+            break :blk .{ .mutability = .@"const", .end = token.loc.end };
         if (token.tag == .keyword_var)
-            break :blk .{ .kind = .@"var", .end = token.loc.end };
+            break :blk .{ .mutability = .mutable, .end = token.loc.end };
         return null;
     };
     const id_token = lex(src, decl.end);
     if (id_token.tag != .identifier) return null;
-    return id_token.loc;
+    return .{ .mutability = decl.mutability, .id = id_token.loc };
 }
 
 // Statement
@@ -311,9 +316,9 @@ fn WhileStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usiz
 //     <- VarDeclProto (COMMA (VarDeclProto / Expr))* EQUAL Expr SEMICOLON
 //      / Expr (AssignOp Expr / (COMMA (VarDeclProto / Expr))+ EQUAL Expr)? SEMICOLON
 fn VarDeclExprStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    if (VarDeclProto(src, start)) |id_loc| {
+    if (VarDeclProto(src, start)) |decl| {
 
-        var off = id_loc.end;
+        var off = decl.id.end;
         while (true) {
             const token = lex(src, off);
             if (token.tag == .comma) @panic("todo");
@@ -337,7 +342,7 @@ fn VarDeclExprStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}
         if (vm_opt) |vm| {
             const expr_end2 = try Expr(src, expr_start, vm) orelse unreachable;
             std.debug.assert(expr_end2 == expr_end);
-            try vm.declareAndAssignStackTop(id_loc);
+            try vm.declareAndAssignStackTop(decl.mutability, decl.id);
         }
         return end;
     } else if (try Expr(src, start, null)) |expr_end| {
