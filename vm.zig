@@ -556,6 +556,10 @@ fn ErrorOr(comptime T: type) type {
     };
 }
 
+pub const AssignOp = enum {
+    equal,
+};
+
 fn compareOpStr(op: std.math.CompareOperator) []const u8 {
     return switch (op) {
         .lt => "<",

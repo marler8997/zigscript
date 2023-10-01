@@ -346,10 +346,15 @@ fn VarDeclExprStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}
         }
         return end;
     } else if (try Expr(src, start, null)) |expr_end| {
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        // GRAMMAR HACK
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         const token = lex(src, expr_end);
+        if (AssignOp(token)) |assign_op| {
+            _ = assign_op;
+            @panic("todo");
+        }
+
+        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        // GRAMMAR HACK (kinda)
+        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         if (token.tag == .semicolon) {
             if (vm_opt) |vm| {
                 const expr_end2 = try Expr(src, start, vm);
@@ -1014,6 +1019,29 @@ fn ForPrefix(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
     @panic("todo");
 }
 
+fn AssignOp(token: std.zig.Token) ?zigscript.vm.AssignOp {
+    return switch (token.tag) {
+        .asterisk_equal => @panic("todo"),
+        .asterisk_pipe_equal => @panic("todo"),
+        .slash_equal => @panic("todo"),
+        .percent_equal => @panic("todo"),
+        .plus_equal => @panic("todo"),
+        .plus_pipe_equal => @panic("todo"),
+        .minus_equal => @panic("todo"),
+        .minus_pipe_equal => @panic("todo"),
+        .angle_bracket_angle_bracket_left_equal => @panic("todo"),
+        .angle_bracket_angle_bracket_left_pipe_equal => @panic("todo"),
+        .angle_bracket_angle_bracket_right_equal => @panic("todo"),
+        .ampersand_equal => @panic("todo"),
+        .caret_equal => @panic("todo"),
+        .pipe_equal => @panic("todo"),
+        .asterisk_percent_equal => @panic("todo"),
+        .plus_percent_equal => @panic("todo"),
+        .minus_percent_equal => @panic("todo"),
+        .equal => .equal,
+        else => null,
+    };
+}
 
 fn CompareOp(token: std.zig.Token) ?std.math.CompareOperator {
     return switch (token.tag) {
