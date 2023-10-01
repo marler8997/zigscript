@@ -226,7 +226,7 @@ fn VarDeclProto(src: [:0]const u8, start: usize) ?std.zig.Token.Loc {
 //      / LabeledStatement
 //      / SwitchExpr
 //      / VarDeclExprStatement
-fn Statement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+pub fn Statement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     var first_token = lex(src, start);
 
     if (first_token.tag == .keyword_comptime)

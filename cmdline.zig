@@ -87,23 +87,27 @@ fn executeSrc(filename: []const u8, src: [:0]const u8) void {
         .allocator = gpa.allocator()
     };
     defer vm.deinit();
-    if (interp.Block(src, 0, &vm)) |end_opt| {
-        const end = end_opt orelse fatal("failed to parse '{s}' as a Block", .{filename});
 
-        const token = interp.lex(src, end);
-        if (token.tag != .eof) fatal(
-            "failed to fully parse '{s}' as a Block (file_len={}, parse_len={})",
-            .{filename, src.len, end},
-        );
-        std.debug.assert(vm.scope_stack.items.len == 0);
-    } else |vm_err| switch (vm_err) {
-        error.Vm => {
+    vm.blockStart();
+    var off: usize = 0;
+    while (true) {
+        off = interp.Statement(src, off, &vm) catch {
             const err = vm.err orelse @panic("vm reported error but has none?");
             // TODO: print the token location etc
             const error_msg = err.getTestMsg();
             fatal("{s}: error: {s}", .{filename, error_msg});
-        },
+        } orelse break;
     }
+
+    {
+        const token = interp.lex(src, off);
+        if (token.tag != .eof) fatal(
+            "{s}: failed to parse the next statement (offset={})",
+            .{filename, off},
+        );
+    }
+    vm.blockEnd();
+    std.debug.assert(vm.scope_stack.items.len == 0);
 }
 
 fn mapFileZ(file: std.fs.File) ![:0]align(std.mem.page_size) u8 {
