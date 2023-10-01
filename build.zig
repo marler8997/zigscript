@@ -33,7 +33,12 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         const run = b.addRunArtifact(exe);
-        run.expectStdOutEqual("Hello, World!\nHello, World with Concat!\n");
+        run.expectStdOutEqual(
+            \\Hello, World!
+            \\Hello, World with Concat!
+            \\Hello Vars!
+            \\
+        );
         test_step.dependOn(&run.step);
     }
     {

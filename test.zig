@@ -193,6 +193,14 @@ pub fn main() !void {
     try testBlockError("{const a = 0;const a = 0;}", "redeclaration");
     try testBlock("{const a = 0;@assert(a == 0);}");
     try testBlock("{var a = 0;@assert(a == 0);}");
+    try testBlock("{var a = 1;@assert(a + 2 == 3);}");
+    try testBlock("{var a = 3;@assert(12 == a * 4);}");
+    try testBlock("{var a = 3;@assert(12 == a * 4);a = 4;@assert(a == 4);}");
+    try testBlockError("{var a = 3;a = false;}", "expected type 'number', found 'bool'");
+    try testBlockError("{var a = false;a = 0;}", "expected type 'bool', found 'number'");
+    try testBlock(
+        \\{var a = "Hello"; @out(a); a = " Vars!\n"; @out(a);}
+    );
 }
 
 fn testExpr(src: [:0]const u8) !void {

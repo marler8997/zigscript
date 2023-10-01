@@ -348,8 +348,24 @@ fn VarDeclExprStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}
     } else if (try Expr(src, start, null)) |expr_end| {
         const token = lex(src, expr_end);
         if (AssignOp(token)) |assign_op| {
-            _ = assign_op;
-            @panic("todo");
+            // we can return early here if we don't match, no other
+            // grammar branch starts with AssignOp
+            const rhs_end = try Expr(src, token.loc.end, null) orelse return null;
+            const semicolon_end = blk: {
+                const semicolon_token = lex(src, rhs_end);
+                if (semicolon_token.tag != .semicolon) return null;
+                break :blk semicolon_token.loc.end;
+            };
+
+            if (vm_opt) |vm| {
+                const lhs_expr_end2 = try Expr(src, start, vm) orelse unreachable;
+                std.debug.assert(lhs_expr_end2 == expr_end);
+                const l_value = try vm.getStackTopLValue(start);
+                const rhs_end2 = try Expr(src, token.loc.end, vm) orelse unreachable;
+                std.debug.assert(rhs_end2 == rhs_end);
+                try vm.assignStackTop(token.loc.start, assign_op, l_value);
+            }
+            return semicolon_end;
         }
 
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -1038,7 +1054,7 @@ fn AssignOp(token: std.zig.Token) ?zigscript.vm.AssignOp {
         .asterisk_percent_equal => @panic("todo"),
         .plus_percent_equal => @panic("todo"),
         .minus_percent_equal => @panic("todo"),
-        .equal => .equal,
+        .equal => .normal,
         else => null,
     };
 }

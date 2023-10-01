@@ -9,6 +9,7 @@ pub fn oom(e: error{OutOfMemory}) noreturn {
 const TokenError = enum {
     undeclared_identifier,
     redeclaration,
+    not_lvalue,
     expected_eof,
     not_implemented,
     assert_failed,
@@ -34,6 +35,7 @@ const VmError = struct {
             .token => |token_error| switch (token_error) {
                 .undeclared_identifier => return "undeclared identifier",
                 .redeclaration => return "redeclaration",
+                .not_lvalue => return "invalid left-hand side to assignment",
                 .expected_eof => return "expected eof",
                 .not_implemented => return "not implemented",
                 .assert_failed => return "assert failed",
@@ -66,7 +68,7 @@ const Scope = struct {
 pub const Vm = struct {
     src: [:0]const u8,
     allocator: std.mem.Allocator,
-    stack: std.ArrayListUnmanaged(Value) = .{},
+    stack: std.ArrayListUnmanaged(IndirectValue) = .{},
     err: ?VmError = null,
     current_function: ?Function = null,
     scope_stack: std.ArrayListUnmanaged(Scope) = .{},
@@ -132,7 +134,7 @@ pub const Vm = struct {
     }
 
     pub fn push_bool(self: *Vm, val: bool) void {
-        self.stack.append(self.allocator, .{ .bool = val }) catch |e| oom(e);
+        self.stack.append(self.allocator, .{ .direct = .{ .bool = val } }) catch |e| oom(e);
     }
 
     pub fn push_string_literal(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
@@ -141,7 +143,7 @@ pub const Vm = struct {
             error.OutOfMemory => |e| oom(e),
             error.InvalidLiteral => return self.tokenError(loc.start, .invalid_string_literal),
         };
-        self.stack.append(self.allocator, .{ .string = string }) catch |e| oom(e);
+        self.stack.append(self.allocator, .{ .direct = .{ .string = string } }) catch |e| oom(e);
     }
 
     pub fn push_number_literal(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
@@ -165,9 +167,9 @@ pub const Vm = struct {
             ),
         };
 
-        self.stack.append(self.allocator, .{
+        self.stack.append(self.allocator, .{ .direct = .{
             .number = num.toMutable(),
-        }) catch |e| oom(e);
+        }}) catch |e| oom(e);
     }
 
     pub fn pushCharLiteral(self: *Vm, token: std.zig.Token) error{Vm}!void {
@@ -178,15 +180,41 @@ pub const Vm = struct {
         return self.tokenError(token.loc.start, .not_implemented);
     }
 
-    fn scopeLookup(self: *Vm, slice: []const u8) ?*const ScopeEntry {
+    const ScopeLookup = struct {
+        scope_index: usize,
+        entry: *const ScopeEntry,
+    };
+    fn scopeLookup(self: *Vm, slice: []const u8) ?ScopeLookup {
         var i: usize = self.scope_stack.items.len;
         while (i > 0) {
             i -= 1;
             const scope = &self.scope_stack.items[i];
             if (scope.map.get(slice)) |*value_ptr|
-                return value_ptr;
+                return .{ .scope_index = i, .entry = value_ptr };
         }
         return null;
+    }
+
+    pub fn getStackTopLValue(self: *Vm, token_pos: usize) error{Vm}!ScopeRef {
+        if (self.stack.items.len == 0) @panic("codebug");
+        const top = self.stack.pop();
+        return switch (top) {
+            .direct => self.tokenError(token_pos, .not_lvalue),
+            .scope_ref => |s| s,
+        };
+    }
+
+    pub fn assignStackTop(self: *Vm, op_pos: usize, op: AssignOp, l_value: ScopeRef) error{Vm}!void {
+        const entry = l_value.getEntry(self.*);
+        var rhs_indirect = self.stack.popOrNull() orelse @panic("codebug");
+        errdefer rhs_indirect.deinit(self.allocator);
+        switch (op) {
+            .normal => rhs_indirect.moveInto(self.allocator, &entry.value) catch return self.generalError(
+                op_pos,
+                "expected type '{s}', found '{s}'",
+                .{ entry.value.error_desc(), rhs_indirect.resolve(self.*).error_desc() },
+            ),
+        }
     }
 
     pub fn declareAndAssignStackTop(self: *Vm, mutability: Mutability, id_loc: std.zig.Token.Loc) error{Vm}!void {
@@ -194,7 +222,7 @@ pub const Vm = struct {
         if (self.scopeLookup(slice)) |_| return self.tokenError(id_loc.start, .redeclaration);
         if (self.scope_stack.items.len == 0) @panic("todo: assign var in global scope");
         const scope = &self.scope_stack.items[self.scope_stack.items.len-1];
-        const value = self.stack.popOrNull() orelse @panic("codebug");
+        const value = (self.stack.popOrNull() orelse @panic("codebug")).resolve(self.*);
         scope.map.putNoClobber(self.allocator, slice, .{
             .mutability = mutability,
             .value = value,
@@ -203,8 +231,11 @@ pub const Vm = struct {
 
     pub fn pushID(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
         const slice = self.src[loc.start..loc.end];
-        const value_entry = self.scopeLookup(slice) orelse return self.tokenError(loc.start, .undeclared_identifier);
-        self.stack.append(self.allocator, value_entry.value.clone(self.allocator)) catch |e| oom(e);
+        const lookup = self.scopeLookup(slice) orelse return self.tokenError(loc.start, .undeclared_identifier);
+        self.stack.append(self.allocator, .{ .scope_ref = .{
+            .scope_index = lookup.scope_index,
+            .id = loc,
+        }}) catch |e| oom(e);
     }
 
     pub fn functionProtoStart(self: *Vm, id: ?std.zig.Token.Loc) void {
@@ -226,26 +257,26 @@ pub const Vm = struct {
     pub fn functionProtoNoBody(self: *Vm) void {
         const f = &(self.current_function orelse @panic("codebug"));
         if (!f.params_done) @panic("codebug");
-        self.stack.append(self.allocator, .{ .function = .{
+        self.stack.append(self.allocator, .{ .direct = .{ .function = .{
             .id = f.id,
             .params = f.params.toOwnedSlice(self.allocator) catch |e| oom(e),
             .body = false,
-        }}) catch |e| oom(e);
+        }}}) catch |e| oom(e);
         self.current_function = null;
     }
     pub fn functionProtoBodyStart(self: *Vm) void {
         const f = &(self.current_function orelse @panic("codebug"));
         if (!f.params_done) @panic("codebug");
-        self.stack.append(self.allocator, .{ .function = .{
+        self.stack.append(self.allocator, .{ .direct = .{ .function = .{
             .id = f.id,
             .params = f.params.toOwnedSlice(self.allocator) catch |e| oom(e),
             .body = true,
-        }}) catch |e| oom(e);
+        }}}) catch |e| oom(e);
         self.current_function = null;
     }
     pub fn functionProtoBodyFailedParse(self: *Vm) void {
         if (self.stack.items.len == 0) @panic("codebug");
-        const f = self.stack.pop();
+        const f = self.stack.pop().resolve(self.*);
         std.debug.assert(f == .function);
     }
     pub fn functionProtoBodyEnd(self: *Vm) void {
@@ -261,29 +292,35 @@ pub const Vm = struct {
         );
     }
 
-    fn popArg(self: *Vm, loc: usize, value_type: ValueType) error{Vm}!Value {
-        std.debug.assert(self.stack.items.len > 0);
-        const actual_type: ValueType = self.stack.items[self.stack.items.len - 1] ;
-        if (actual_type != value_type) return self.generalError(
+    fn enforceType(self: *Vm, comptime expected_type: ValueType, loc: usize, value: Value) error{Vm}!expected_type.T() {
+        if (value != expected_type) return self.generalError(
             loc,
             "expected type '{s}', found '{s}'",
-            .{ value_type.error_desc(), actual_type.error_desc() },
+            .{ expected_type.error_desc(), value.error_desc() },
         );
-        return self.stack.pop();
+        return switch (expected_type) {
+            .bool => value.bool,
+            .number => value.number,
+            .string => value.string,
+            .function => value.function,
+        };
     }
 
     pub fn callBuiltin(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
         const name = self.src[loc.start..loc.end];
         if (std.mem.eql(u8, name, "@out")) {
             try self.enforceArgCount(loc.start, 1);
-            const msg = try self.popArg(loc.start, .string);
-            defer msg.deinit(self.allocator);
-            std.io.getStdOut().writer().writeAll(msg.string)
+            const msg_indirect = self.stack.pop();
+            defer msg_indirect.deinit(self.allocator);
+            const msg = try self.enforceType(.string, loc.start, msg_indirect.resolve(self.*));
+            std.io.getStdOut().writer().writeAll(msg)
                 catch |err| std.debug.panic("@out failed with {s}", .{@errorName(err)});
         } else if (std.mem.eql(u8, name, "@assert")) {
             try self.enforceArgCount(loc.start, 1);
-            const value = try self.popArg(loc.start, .bool);
-            if (!value.bool)
+            const val_indirect = self.stack.pop();
+            defer val_indirect.deinit(self.allocator);
+            const val = try self.enforceType(.bool, loc.start, val_indirect.resolve(self.*));
+            if (!val)
                 return self.tokenError(loc.start, .assert_failed);
         } else {
             return self.tokenError(loc.start, .unknown_builtin);
@@ -297,35 +334,41 @@ pub const Vm = struct {
 
     pub fn binaryBoolOp(self: *Vm, op: BinaryBoolOp, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
-        const first = try self.popArg(op_loc, .bool);
-        const second = try self.popArg(op_loc, .bool);
+        const first_indirect = self.stack.pop();
+        defer first_indirect.deinit(self.allocator);
+        const second_indirect = self.stack.pop();
+        defer second_indirect.deinit(self.allocator);
+        const first = try self.enforceType(.bool, op_loc, first_indirect.resolve(self.*));
+        const second = try self.enforceType(.bool, op_loc, second_indirect.resolve(self.*));
         // we know we have capacity because we just popped off the old values
-        self.stack.appendAssumeCapacity(.{
+        self.stack.appendAssumeCapacity(.{ .direct = .{
             .bool = switch (op) {
-                .@"or" => first.bool or second.bool,
-                .@"and" => first.bool and second.bool,
+                .@"or" => first or second,
+                .@"and" => first and second,
             },
-        });
+        }});
     }
     pub fn binaryCompareOp(self: *Vm, op: std.math.CompareOperator, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
-        const rhs = self.stack.pop();
-        defer rhs.deinit(self.allocator);
-        const lhs = self.stack.pop();
-        defer lhs.deinit(self.allocator);
+        const rhs_indirect = self.stack.pop();
+        defer rhs_indirect.deinit(self.allocator);
+        const lhs_indirect = self.stack.pop();
+        defer lhs_indirect.deinit(self.allocator);
+        const rhs = rhs_indirect.resolve(self.*);
+        const lhs = lhs_indirect.resolve(self.*);
 
         if (lhs == .string or rhs == .string)
             return self.generalError(op_loc, "cannot compare strings with {s}", .{compareOpStr(op)});
 
         // we know we have capacity because we just popped off the old values
-        self.stack.appendAssumeCapacity(.{
+        self.stack.appendAssumeCapacity(.{ .direct = .{
             .bool = switch (lhs) {
                 .bool => |v| try self.compareBool(op, op_loc, v, rhs),
                 .number => |v| try self.compareNumber(op, op_loc, v, rhs),
                 .string => unreachable,
                 .function => @panic("todo"),
             }
-        });
+        }});
     }
 
     pub fn compareBool(self: *Vm, op: std.math.CompareOperator, op_loc: usize, lhs: bool, rhs_val: Value) error{Vm}!bool {
@@ -365,19 +408,21 @@ pub const Vm = struct {
 
     pub fn additionOp(self: *Vm, op: AdditionOp, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
-        const rhs = self.stack.pop();
-        defer rhs.deinit(self.allocator);
-        const lhs = self.stack.pop();
-        defer lhs.deinit(self.allocator);
+        const rhs_indirect = self.stack.pop();
+        defer rhs_indirect.deinit(self.allocator);
+        const lhs_indirect = self.stack.pop();
+        defer lhs_indirect.deinit(self.allocator);
+        const rhs = rhs_indirect.resolve(self.*);
+        const lhs = lhs_indirect.resolve(self.*);
 
         if (op == .concat) {
             if (lhs != .string)
                 return self.generalError(op_loc, "expected indexable; found '{s}'", .{lhs.error_desc()});
             if (rhs != .string)
                 return self.generalError(op_loc, "expected indexable; found '{s}'", .{rhs.error_desc()});
-            self.stack.appendAssumeCapacity(.{
+            self.stack.appendAssumeCapacity(.{ .direct = .{
                 .string = std.mem.concat(self.allocator, u8, &.{ lhs.string, rhs.string }) catch |e| oom(e),
-            });
+            }});
             return;
         }
 
@@ -410,7 +455,7 @@ pub const Vm = struct {
                             .{ op.str() },
                         ),
                     }
-                    self.stack.appendAssumeCapacity(.{ .number = result.toMutable() });
+                    self.stack.appendAssumeCapacity(.{ .direct = .{ .number = result.toMutable() } });
                     return;
                 },
                 .string => {},
@@ -428,10 +473,12 @@ pub const Vm = struct {
 
     pub fn multiplyOp(self: *Vm, op: MultiplyOp, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 2); // should be guaranteed
-        const rhs = self.stack.pop();
-        defer rhs.deinit(self.allocator);
-        const lhs = self.stack.pop();
-        defer lhs.deinit(self.allocator);
+        const rhs_indirect = self.stack.pop();
+        defer rhs_indirect.deinit(self.allocator);
+        const lhs_indirect = self.stack.pop();
+        defer lhs_indirect.deinit(self.allocator);
+        const rhs = rhs_indirect.resolve(self.*);
+        const lhs = lhs_indirect.resolve(self.*);
 
         switch (op) {
             .double_pipe => return self.tokenError(op_loc, .not_implemented),
@@ -447,23 +494,24 @@ pub const Vm = struct {
                 var m = result.toMutable();
                 m.mulNoAlias(lhs.number.toConst(), rhs.number.toConst(), self.allocator);
                 result.setMetadata(m.positive, m.len);
-                self.stack.appendAssumeCapacity(.{ .number = result.toMutable() });
+                self.stack.appendAssumeCapacity(.{ .direct = .{ .number = result.toMutable() } });
             },
         }
     }
 
     pub fn applyPrefixOp(self: *Vm, op: PrefixOp, op_loc: usize) error{Vm}!void {
         std.debug.assert(self.stack.items.len >= 1); // should be guaranteed
-        var value = self.stack.pop();
+        var value_indirect = self.stack.pop();
         var deinit_value = true;
-        defer if (deinit_value) value.deinit(self.allocator);
+        defer if (deinit_value) value_indirect.deinit(self.allocator);
+        var value = value_indirect.resolve(self.*);
 
         switch (op) {
             .not => {
                 if (value != .bool) return self.generalError(
                     op_loc, "expected type 'bool' found '{s}'", .{@tagName(value)}
                 );
-                self.stack.appendAssumeCapacity(.{ .bool = !value.bool });
+                self.stack.appendAssumeCapacity(.{ .direct = .{ .bool = !value.bool } });
             },
             .negate => {
                 if (value != .number) return self.generalError(
@@ -471,7 +519,7 @@ pub const Vm = struct {
                 );
                 deinit_value = false;
                 value.number.negate();
-                self.stack.appendAssumeCapacity(.{ .number = value.number });
+                self.stack.appendAssumeCapacity(.{ .direct = .{ .number = value.number } });
             },
         }
     }
@@ -491,11 +539,62 @@ pub const Vm = struct {
     }
 };
 
+pub const ScopeRef = struct {
+    scope_index: usize,
+    id: std.zig.Token.Loc,
+    pub fn deinit(self: ScopeRef, allocator: std.mem.Allocator) void {
+        _ = self;
+        _ = allocator;
+    }
+    pub fn getEntry(self: ScopeRef, vm: Vm) *ScopeEntry {
+        std.debug.assert(self.scope_index < vm.scope_stack.items.len);
+        const slice = vm.src[self.id.start .. self.id.end];
+        const scope = &vm.scope_stack.items[self.scope_index];
+        return scope.map.getPtr(slice) orelse @panic("codebug");
+    }
+};
+
+const IndirectValue = union(enum) {
+    direct: Value,
+    scope_ref: ScopeRef,
+
+    pub fn deinit(self: IndirectValue, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .direct => |d| d.deinit(allocator),
+            .scope_ref => |s| s.deinit(allocator),
+        }
+    }
+
+    pub fn resolve(self: IndirectValue, vm: Vm) Value {
+        return switch (self) {
+            .direct => |d| d,
+            .scope_ref => |s| s.getEntry(vm).value,
+        };
+    }
+
+    pub fn moveInto(self: *IndirectValue, allocator: std.mem.Allocator, dst: *Value) error{TypeMismatch}!void {
+        switch (self.*) {
+            .direct => |*d| try dst.move(allocator, d),
+            .scope_ref => {
+                @panic("todo");
+            },
+        }
+    }
+};
+
 const ValueType = enum {
     bool,
     number,
     string,
     function,
+    pub fn T(comptime self: ValueType) type {
+        return switch (self) {
+            .bool => bool,
+            .number => std.math.big.int.Mutable,
+            .string => []const u8,
+            .function => Value.Function,
+        };
+    }
     pub fn error_desc(self: ValueType) []const u8 {
         return switch (self) {
             .bool => "bool",
@@ -527,16 +626,34 @@ const Value = union(ValueType) {
     pub fn error_desc(self: Value) []const u8 {
         return @as(ValueType, self).error_desc();
     }
-    pub fn clone(self: Value, allocator: std.mem.Allocator) Value {
-        switch (self) {
-            .bool => return self,
-            .number => |n| {
-                const copy = n.toManaged(allocator).clone() catch |e| oom(e);
-                return .{ .number = copy.toMutable() };
+    pub fn move(self: *Value, allocator: std.mem.Allocator, from: *Value) error{TypeMismatch}!void {
+        switch (self.*) {
+            .bool => {
+                const from_bool = switch (from.*) {
+                    .bool => |b2| b2,
+                    else => return error.TypeMismatch,
+                };
+                self.* = .{ .bool = from_bool };
             },
-            .string => |s| return .{ .string = allocator.dupe(u8, s) catch |e| oom(e) },
-            else => @panic("todo"),
+            .number => |n| {
+                const from_num = switch (from.*) {
+                    .number => |n2| n2,
+                    else => return error.TypeMismatch,
+                };
+                allocator.free(n.limbs);
+                self.* = .{ .number = from_num };
+            },
+            .string => |s| {
+                const from_str = switch (from.*) {
+                    .string => |s2| s2,
+                    else => return error.TypeMismatch,
+                };
+                allocator.free(s);
+                self.* = .{ .string = from_str };
+            },
+            .function => @panic("todo"),
         }
+        from.* = undefined;
     }
 
     const Function = struct {
@@ -557,7 +674,7 @@ fn ErrorOr(comptime T: type) type {
 }
 
 pub const AssignOp = enum {
-    equal,
+    normal,
 };
 
 fn compareOpStr(op: std.math.CompareOperator) []const u8 {
