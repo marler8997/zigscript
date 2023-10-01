@@ -47,13 +47,13 @@ const VmError = struct {
 
 pub const Mutability = enum { mutable, @"const" };
 
-const ValueEntry = struct {
+const ScopeEntry = struct {
     mutability: Mutability,
     value: Value,
 };
 
 const Scope = struct {
-    map: std.StringHashMapUnmanaged(ValueEntry) = .{},
+    map: std.StringHashMapUnmanaged(ScopeEntry) = .{},
     pub fn deinit(self: *Scope, allocator: std.mem.Allocator) void {
         var it = self.map.iterator();
         while (it.next()) |pair| {
@@ -178,7 +178,7 @@ pub const Vm = struct {
         return self.tokenError(token.loc.start, .not_implemented);
     }
 
-    fn scopeLookup(self: *Vm, slice: []const u8) ?*const ValueEntry {
+    fn scopeLookup(self: *Vm, slice: []const u8) ?*const ScopeEntry {
         var i: usize = self.scope_stack.items.len;
         while (i > 0) {
             i -= 1;
