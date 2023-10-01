@@ -164,7 +164,7 @@ pub fn main() !void {
 
     try testExpr("@assert((true))");
     try testExpr("@assert(((true)))");
-    try testError("a", "not implemented");
+    try testError("a", "undeclared identifier");
     try testExpr("false");
     try testExpr("true");
     try testExpr("0");
@@ -187,6 +187,10 @@ pub fn main() !void {
     try testBlock("{}");
     try testBlock("{@assert(true);}");
     try testBlockError("{@assert(true);@assert(false);}", "assert failed");
+    try testBlock("{const a = 0;}");
+    try testError("@assert(a == 0)", "undeclared identifier");
+    try testBlockError("{const a = 0;const a = 0;}", "redeclaration");
+    try testBlock("{const a = 0;@assert(a == 0);}");
 }
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
@@ -194,6 +198,8 @@ pub fn oom(e: error{OutOfMemory}) noreturn {
 }
 
 const TokenError = enum {
+    undeclared_identifier,
+    redeclaration,
     expected_eof,
     not_implemented,
     assert_failed,
@@ -217,6 +223,8 @@ const VmError = struct {
     pub fn getTestMsg(self: VmError) []const u8 {
         switch (self.kind) {
             .token => |token_error| switch (token_error) {
+                .undeclared_identifier => return "undeclared identifier",
+                .redeclaration => return "redeclaration",
                 .expected_eof => return "expected eof",
                 .not_implemented => return "not implemented",
                 .assert_failed => return "assert failed",
@@ -228,12 +236,24 @@ const VmError = struct {
     }
 };
 
+const Scope = struct {
+    map: std.StringHashMapUnmanaged(Value) = .{},
+    pub fn deinit(self: *Scope, allocator: std.mem.Allocator) void {
+        var it = self.map.iterator();
+        while (it.next()) |pair| {
+            pair.value_ptr.deinit(allocator);
+        }
+        self.map.deinit(allocator);
+    }
+};
+
 pub const Vm = struct {
     src: [:0]const u8,
     allocator: std.mem.Allocator,
     stack: std.ArrayListUnmanaged(Value) = .{},
     err: ?VmError = null,
     current_function: ?Function = null,
+    scope_stack: std.ArrayListUnmanaged(Scope) = .{},
 
     const Function = struct {
         id: ?std.zig.Token.Loc,
@@ -252,6 +272,10 @@ pub const Vm = struct {
         if (self.current_function) |*f| {
             f.params.deinit(self.allocator);
         }
+        for (self.scope_stack.items) |*item| {
+            item.deinit(self.allocator);
+        }
+        self.scope_stack.deinit(self.allocator);
     }
 
     pub fn tokenError(self: *Vm, token_pos: usize, token_error: TokenError) error{Vm} {
@@ -268,6 +292,15 @@ pub const Vm = struct {
             },
         };
         return error.Vm;
+    }
+
+    pub fn blockStart(self: *Vm) void {
+        self.scope_stack.append(self.allocator, .{}) catch |e| oom(e);
+    }
+    pub fn blockEnd(self: *Vm) void {
+        if (self.scope_stack.items.len == 0) @panic("codebug");
+        var scope = self.scope_stack.pop();
+        scope.deinit(self.allocator);
     }
 
     pub fn pushBlockLabel(self: *Vm, loc: std.zig.Token.Loc) void {
@@ -327,6 +360,32 @@ pub const Vm = struct {
 
     pub fn pushDotIdentifier(self: *Vm, token: std.zig.Token) error{Vm}!void {
         return self.tokenError(token.loc.start, .not_implemented);
+    }
+
+    fn scopeLookup(self: *Vm, slice: []const u8) ?*const Value {
+        var i: usize = self.scope_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const scope = &self.scope_stack.items[i];
+            if (scope.map.get(slice)) |*value_ptr|
+                return value_ptr;
+        }
+        return null;
+    }
+
+    pub fn declareAndAssignStackTop(self: *Vm, id_loc: std.zig.Token.Loc) error{Vm}!void {
+        const slice = self.src[id_loc.start .. id_loc.end];
+        if (self.scopeLookup(slice)) |_| return self.tokenError(id_loc.start, .redeclaration);
+        if (self.scope_stack.items.len == 0) @panic("todo: assign var in global scope");
+        const scope = &self.scope_stack.items[self.scope_stack.items.len-1];
+        const value = self.stack.popOrNull() orelse @panic("codebug");
+        scope.map.putNoClobber(self.allocator, slice, value) catch |e| oom(e);
+    }
+
+    pub fn pushID(self: *Vm, loc: std.zig.Token.Loc) error{Vm}!void {
+        const slice = self.src[loc.start..loc.end];
+        const value = self.scopeLookup(slice) orelse return self.tokenError(loc.start, .undeclared_identifier);
+        self.stack.append(self.allocator, value.clone(self.allocator)) catch |e| oom(e);
     }
 
     pub fn functionProtoStart(self: *Vm, id: ?std.zig.Token.Loc) void {
@@ -649,6 +708,16 @@ const Value = union(ValueType) {
     pub fn error_desc(self: Value) []const u8 {
         return @as(ValueType, self).error_desc();
     }
+    pub fn clone(self: Value, allocator: std.mem.Allocator) Value {
+        switch (self) {
+            .bool => return self,
+            .number => |n| {
+                const copy = n.toManaged(allocator).clone() catch |e| oom(e);
+                return .{ .number = copy.toMutable() };
+            },
+            else => @panic("todo"),
+        }
+    }
 
     const Function = struct {
         id: ?std.zig.Token.Loc,
@@ -727,6 +796,7 @@ fn testExpr(src: [:0]const u8) !void {
         if (end != src.len) {
             std.log.err("src '{s}' is not an Expr (end={?})", .{src, end});
         }
+        std.debug.assert(vm.scope_stack.items.len == 0);
     } else |vm_err| switch (vm_err) {
         error.Vm => {
             const err = vm.err orelse @panic("vm reported error but has none?");
@@ -768,6 +838,7 @@ fn testBlock(src: [:0]const u8) !void {
         if (end != src.len) {
             std.log.err("src '{s}' is not a Block (end={?})", .{src, end});
         }
+        std.debug.assert(vm.scope_stack.items.len == 0);
     } else |vm_err| switch (vm_err) {
         error.Vm => {
             const err = vm.err orelse @panic("vm reported error but has none?");
@@ -806,6 +877,7 @@ fn testSrc(src: [:0]const u8) !void {
     };
     defer vm.deinit();
     try interp.Root(src, 0, &vm);
+    std.debug.assert(vm.scope_stack.items.len == 0);
 }
 
 fn testSrcError(src: [:0]const u8, expected_error: []const u8) !void {

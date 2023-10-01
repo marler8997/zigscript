@@ -193,8 +193,16 @@ fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
     return end;
 }
 
-//VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign? AddrSpace? LinkSection?
-fn VarDeclProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
+// Original Zig Rule:
+// -------------------
+// VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign? AddrSpace? LinkSection?
+//
+// Modified ZigScript Rule:
+// -------------------
+// VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER
+//
+// Not allowing type designation for now.
+fn VarDeclProto(src: [:0]const u8, start: usize) ?std.zig.Token.Loc {
     const decl: struct { kind: enum {@"const", @"var"}, end: usize} = blk: {
         const token = lex(src, start);
         if (token.tag == .keyword_const)
@@ -203,9 +211,9 @@ fn VarDeclProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
             break :blk .{ .kind = .@"var", .end = token.loc.end };
         return null;
     };
-    _ = decl;
-    _ = vm_opt;
-    @panic("todo");
+    const id_token = lex(src, decl.end);
+    if (id_token.tag != .identifier) return null;
+    return id_token.loc;
 }
 
 // Statement
@@ -303,9 +311,35 @@ fn WhileStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usiz
 //     <- VarDeclProto (COMMA (VarDeclProto / Expr))* EQUAL Expr SEMICOLON
 //      / Expr (AssignOp Expr / (COMMA (VarDeclProto / Expr))+ EQUAL Expr)? SEMICOLON
 fn VarDeclExprStatement(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    if (VarDeclProto(src, start, null)) |decl_end| {
-        _ = decl_end;
-        @panic("todo");
+    if (VarDeclProto(src, start)) |id_loc| {
+
+        var off = id_loc.end;
+        while (true) {
+            const token = lex(src, off);
+            if (token.tag == .comma) @panic("todo");
+            break;
+        }
+
+        const expr_start = blk: {
+            const token = lex(src, off);
+            if (token.tag != .equal) return null;
+            break :blk token.loc.end;
+        };
+
+        const expr_end = try Expr(src, expr_start, null) orelse return null;
+
+        const end = blk: {
+            const token = lex(src, expr_end);
+            if (token.tag != .semicolon) return null;
+            break :blk token.loc.end;
+        };
+
+        if (vm_opt) |vm| {
+            const expr_end2 = try Expr(src, expr_start, vm) orelse unreachable;
+            std.debug.assert(expr_end2 == expr_end);
+            try vm.declareAndAssignStackTop(id_loc);
+        }
+        return end;
     } else if (try Expr(src, start, null)) |expr_end| {
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         // GRAMMAR HACK
@@ -524,14 +558,14 @@ pub fn Block(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
         return null;
 
     if (vm_opt) |vm| {
-        // TODO: tell vm we're starting a block
+        vm.blockStart();
         var off = statements_start;
         while (true) {
             off = try Statement(src, off, vm) orelse break;
             // TODO: tell vm we finished a statement
         }
         std.debug.assert(off == statements_end);
-        // TODO: tell vm we finished a block
+        vm.blockEnd();
     }
 
     return r_brace_token.loc.end;
@@ -712,7 +746,7 @@ fn PrimaryTypeExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usi
             } else if (std.mem.eql(u8, slice, "true")) {
                 vm.push_bool(true);
             } else {
-                return vm.tokenError(first_token.loc.start, .not_implemented);
+                try vm.pushID(first_token.loc);
             }
         }
         return first_token.loc.end;
