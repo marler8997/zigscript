@@ -174,15 +174,15 @@ pub fn main() !void {
     try testExpr("comptime 0");
     try testExpr("comptime \"hello\"");
 
-    try testSrc("//! a doc comment");
+    try testRoot("//! a doc comment");
     try testExpr("fn foo()");
     try testExpr("fn foo(bar)");
     try testExpr("fn foo(bar,)");
     try testExpr("fn foo(bar,baz)");
     try testExpr("fn foo(bar,baz,)");
 
-    try testSrc("fn foo();");
-    try testSrc("fn foo(){ }");
+    try testRoot("fn foo();");
+    try testRoot("fn foo(){ }");
 
     try testBlock("{}");
     try testBlock("{@assert(true);}");
@@ -870,7 +870,7 @@ fn testBlockError(src: [:0]const u8, expected_error: []const u8) !void {
     }
 }
 
-fn testSrc(src: [:0]const u8) !void {
+fn testRoot(src: [:0]const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
     defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
     var vm = Vm{
@@ -882,7 +882,7 @@ fn testSrc(src: [:0]const u8) !void {
     std.debug.assert(vm.scope_stack.items.len == 0);
 }
 
-fn testSrcError(src: [:0]const u8, expected_error: []const u8) !void {
+fn testRootError(src: [:0]const u8, expected_error: []const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
     defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
     var vm = Vm{
