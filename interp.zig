@@ -1,6 +1,6 @@
 const std = @import("std");
 const zigscript = @import("zigscript.zig");
-const Vm = zigscript.Vm;
+const Vm = zigscript.vm.Vm;
 
 fn applyPrefixOps(src: [:0]const u8, start: usize, op_count: u16, vm: *Vm) error{Vm}!void {
     var off = start;
@@ -1022,7 +1022,7 @@ fn CompareOp(token: std.zig.Token) ?std.math.CompareOperator {
     };
 }
 
-fn AdditionOp(token: std.zig.Token) ?zigscript.AdditionOp {
+fn AdditionOp(token: std.zig.Token) ?zigscript.vm.AdditionOp {
     return switch (token.tag) {
         .plus_plus => return .concat,
         .plus => return .add,
@@ -1035,7 +1035,7 @@ fn AdditionOp(token: std.zig.Token) ?zigscript.AdditionOp {
     };
 }
 
-fn MultiplyOp(token: std.zig.Token) ?zigscript.MultiplyOp {
+fn MultiplyOp(token: std.zig.Token) ?zigscript.vm.MultiplyOp {
     return switch (token.tag) {
         .pipe_pipe => .double_pipe,
         .asterisk => .mul,
@@ -1048,7 +1048,7 @@ fn MultiplyOp(token: std.zig.Token) ?zigscript.MultiplyOp {
     };
 }
 
-fn PrefixOp(token: std.zig.Token) ?zigscript.PrefixOp {
+fn PrefixOp(token: std.zig.Token) ?zigscript.vm.PrefixOp {
     return switch (token.tag) {
         .bang => .not,
         .minus => .negate,

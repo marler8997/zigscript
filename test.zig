@@ -1,8 +1,6 @@
 const std = @import("std");
-const zigscript = @import("zigscript.zig");
+const Vm = @import("vm.zig").Vm;
 const interp = @import("interp.zig");
-
-const Vm = zigscript.Vm;
 
 pub fn main() !void {
     try testError("@badBuiltin()", "unknown builtin");

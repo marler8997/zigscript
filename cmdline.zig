@@ -1,8 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
-
 const zigscript = @import("zigscript.zig");
-const interp = @import("interp.zig");
 
 pub fn oom(e: error{OutOfMemory}) noreturn {
     @panic(@errorName(e));
@@ -91,7 +89,7 @@ fn executeSrc(filename: []const u8, src: [:0]const u8) void {
     vm.blockStart();
     var off: usize = 0;
     while (true) {
-        off = interp.Statement(src, off, &vm) catch {
+        off = zigscript.interp.Statement(src, off, &vm) catch {
             const err = vm.err orelse @panic("vm reported error but has none?");
             // TODO: print the token location etc
             const error_msg = err.getTestMsg();
@@ -100,7 +98,7 @@ fn executeSrc(filename: []const u8, src: [:0]const u8) void {
     }
 
     {
-        const token = interp.lex(src, off);
+        const token = zigscript.interp.lex(src, off);
         if (token.tag != .eof) fatal(
             "{s}: failed to parse the next statement (offset={})",
             .{filename, off},
