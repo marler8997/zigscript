@@ -619,10 +619,23 @@ fn LoopExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
 
 // ForPrefix <- KEYWORD_for LPAREN ForArgumentsList RPAREN PtrListPayload
 fn ForExpr(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
-    {
-        var token = lex(src, start);
-        if (token.tag != .keyword_for) return null;
-    }
+    const arg_start = blk: {
+        const for_token = lex(src, start);
+        if (for_token.tag != .keyword_for) return null;
+        const paren_token = lex(src, for_token.loc.end);
+        if (paren_token.tag != .l_paren) return null;
+        break :blk paren_token.loc.end;
+    };
+
+    const arg_end = try ForArgumentsList(src, arg_start, null) orelse return null;
+    const payload_start = blk: {
+        const token = lex(src, arg_end);
+        if (token.tag != .r_paren) return null;
+        break :blk token.loc.end;
+    };
+
+    const ptr_list_it = PtrListPayload(src, payload_start) orelse return null;
+    _ = ptr_list_it;
     _ = vm_opt;
     @panic("todo");
 }
@@ -1033,6 +1046,68 @@ fn ForPrefix(src: [:0]const u8, start: usize, vm_opt: ?*Vm) ?usize {
     }
     _ = vm_opt;
     @panic("todo");
+}
+
+const PtrListPayloadIterator = struct {
+    first_has_asterisk: bool,
+    first_id_off: usize,
+    end: usize,
+};
+// PtrListPayload <- PIPE ASTERISK? IDENTIFIER (COMMA ASTERISK? IDENTIFIER)* COMMA? PIPE
+// TODO: this should return an iterator!!!
+fn PtrListPayload(src: [:0]const u8, start: usize) ?PtrListPayloadIterator {
+    const after_pipe = blk: {
+        const token = lex(src, start);
+        if (token.tag != .pipe) return null;
+        break :blk token.loc.end;
+    };
+    var token = lex(src, after_pipe);
+    var first_id_off = after_pipe;
+    var first_has_asterisk = false;
+    if (token.tag == .asterisk) {
+        first_has_asterisk = true;
+        first_id_off = token.loc.end;
+        token = lex(src, first_id_off);
+    }
+
+    if (token.tag != .identifier) return null;
+    var off = token.loc.end;
+    while (true) {
+        token = lex(src, off);
+        if (token.tag != .comma) break;
+        @panic("todo");
+    }
+
+    if (token.tag != .pipe) return null;
+    return .{
+        .first_has_asterisk = first_has_asterisk,
+        .first_id_off = first_id_off,
+        .end = token.loc.end,
+    };
+}
+
+// ForArgumentsList <- ForItem (COMMA ForItem)* COMMA?
+fn ForArgumentsList(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const first_item_end = try ForItem(src, start, vm_opt) orelse return null;
+    var off = first_item_end;
+    while (true) {
+        const token = lex(src, off);
+        if (token.tag != .comma) return off;
+
+        off = try ForItem(src, token.loc.end, vm_opt) orelse return token.loc.end;
+    }
+}
+
+// ForItem <- Expr (DOT2 Expr?)?
+fn ForItem(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+    const expr_end = try Expr(src, start, vm_opt) orelse return null;
+
+    const dot2_token = lex(src, expr_end);
+    if (dot2_token.tag != .ellipsis2) return expr_end;
+
+    if (try Expr(src, dot2_token.loc.end, vm_opt)) |expr2_end|
+        return expr2_end;
+    return dot2_token.loc.end;
 }
 
 fn AssignOp(token: std.zig.Token) ?zigscript.vm.AssignOp {

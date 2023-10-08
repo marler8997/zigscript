@@ -201,6 +201,7 @@ pub fn main() !void {
     try testBlock(
         \\{var a = "Hello"; @out(a); a = " Vars!\n"; @out(a);}
     );
+    //try testBlock("{ for (0..1) |_| { @assert(true); } }");
 }
 
 fn testExpr(src: [:0]const u8) !void {
