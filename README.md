@@ -6,7 +6,7 @@ A companion scripting language for Zig developers. The driving goals are to:
 2) be seamless for Zig developers to write
 
 ZigScript is meant to exist in a world with Zig.  It's designed to accomodate the use
-cases that Zig isn't optimal for and leaves the everything else to Zig.
+cases that Zig isn't optimal for and leaves everything else to Zig.
 
 ZigScript uses the Zig tokenizer along with a modified version of its grammar.
 
