@@ -174,15 +174,11 @@ pub fn main() !void {
     try testExpr("comptime 0");
     try testExpr("comptime \"hello\"");
 
-    try testRoot("//! a doc comment");
     try testExpr("fn foo()");
     try testExpr("fn foo(bar)");
     try testExpr("fn foo(bar,)");
     try testExpr("fn foo(bar,baz)");
     try testExpr("fn foo(bar,baz,)");
-
-    try testRoot("fn foo();");
-    try testRoot("fn foo(){ }");
 
     try testBlock("{}");
     try testBlock("{@assert(true);}");
@@ -202,6 +198,13 @@ pub fn main() !void {
         \\{var a = "Hello"; @out(a); a = " Vars!\n"; @out(a);}
     );
     //try testBlock("{ for (0..1) |_| { @assert(true); } }");
+    try testMain("fn foo();");
+    try testMain("fn foo(){ }");
+    try testMain("fn main(){}");
+    //try testMain("fn main(){@assert(true);}");
+    //try testMain(
+    //    \\fn main(){@out("Hello Main!\n");}
+    //);
 }
 
 fn testExpr(src: [:0]const u8) !void {
@@ -288,7 +291,7 @@ fn testBlockError(src: [:0]const u8, expected_error: []const u8) !void {
     }
 }
 
-fn testRoot(src: [:0]const u8) !void {
+fn testMain(src: [:0]const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
     defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
     var vm = Vm{
@@ -296,26 +299,27 @@ fn testRoot(src: [:0]const u8) !void {
         .allocator = gpa.allocator()
     };
     defer vm.deinit();
-    try interp.Root(src, 0, &vm);
-    std.debug.assert(vm.scope_stack.items.len == 0);
-}
 
-fn testRootError(src: [:0]const u8, expected_error: []const u8) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
-    defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
-    var vm = Vm{
-        .src = src,
-        .allocator = gpa.allocator()
-    };
-    defer vm.deinit();
-    if (interp.Root(src, 0, &vm)) |_| {
-        std.log.err("src '{s}' unexpectedly didn't have an error", .{src});
-        return error.TestUnexpectedResult;
-    } else |vm_err| switch (vm_err) {
-        error.Vm => {
-            const err = vm.err orelse @panic("vm reported error but has none?");
-            const actual_msg = err.getTestMsg();
-            return std.testing.expectEqualSlices(u8, expected_error, actual_msg);
-        },
+    var off: usize = 0;
+    while (true) {
+        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        // TODO: don't pass in VM
+        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        if (interp.ContainerDeclaration(src, off, &vm)) |decl_end_opt| {
+            off = decl_end_opt orelse break;
+        } else |vm_err| switch (vm_err) {
+            error.Vm => {
+                const err = vm.err orelse @panic("vm reported error but has none?");
+                const error_msg = err.getTestMsg();
+                std.log.err("src '{s}' had unexpected error: {s}", .{src, error_msg});
+                return error.TestUnexpectedResult;
+            },
+        }
+    }
+
+    {
+        var token = interp.lex(src, off);
+        if (token.tag != .eof)
+            return error.TestUnexpectedResult;
     }
 }

@@ -26,82 +26,25 @@ pub fn lex(src: [:0]const u8, off: usize) std.zig.Token {
 // GRAMMAR FUNCTIONS
 // --------------------------------------------------------------------------------
 
-// Root <- skip container_doc_comment? ContainerMembers eof
-pub fn Root(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!void {
-    const off = blk: {
-        var token = lex(src, start);
-        if (token.tag == .container_doc_comment)
-            break :blk token.loc.end;
-        break :blk start;
-    };
-    const end = try ContainerMembers(src, off, vm);
-    const token = lex(src, end);
-    if (token.tag != .eof)
-        return vm.tokenError(token.loc.start, .expected_eof);
-}
-
-// ContainerMembers <- ContainerDeclarations (ContainerField COMMA)* (ContainerField / ContainerDeclarations)
-pub fn ContainerMembers(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!usize {
-    const decl_end = try ContainerDeclarations(src, start, vm);
-
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // GRAMMAR HACK
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    const token = lex(src, decl_end);
-    if (token.tag == .eof) return decl_end;
-    std.debug.panic("todo: ContainerMembers token {s}", .{@tagName(token.tag)});
-}
-
-// ContainerDeclarations <- (TestDecl / ComptimeDecl / doc_comment? KEYWORD_pub? Decl)*
-pub fn ContainerDeclarations(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!usize {
-
+// This is part of the ContainerDeclarations rule:
+//     TestDecl / ComptimeDecl / doc_comment? KEYWORD_pub? Decl
+// MODIFIED:
+//     Keyword_pub? Decl
+//
+// For now ZigScript does not plan to support test blocks, comptime blocks nor doc comments.
+// TODO: maybe we should also not support pub for now?  Just assume everything is pub?
+pub fn ContainerDeclaration(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
     var off = start;
-    while (true) {
-        if (try TestDecl(src, off, vm)) |decl_end| {
-            _ = decl_end;
-            @panic("todo");
-        } else if (try ComptimeDecl(src, off, vm)) |decl_end| {
-            _ = decl_end;
-            @panic("todo");
-        } else {
-            var token = lex(src, off);
-            if (token.tag == .doc_comment) {
-                off = token.loc.end;
-                token = lex(src, off);
-            }
+    var token = lex(src, start);
 
-            var is_pub = false;
-            if (token.tag == .keyword_pub) {
-                is_pub = true;
-                off = token.loc.end;
-                token = lex(src, off);
-            }
-
-            off = try Decl(src, off, vm) orelse return off;
-        }
+    var is_pub = false;
+    if (token.tag == .keyword_pub) {
+        is_pub = true;
+        off = token.loc.end;
+        token = lex(src, off);
     }
-}
 
-// TestDecl <- KEYWORD_test (STRINGLITERALSINGLE / IDENTIFIER)? Block
-fn TestDecl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
-    const off = blk: {
-        const token = lex(src, start);
-        if (token.tag != .keyword_test) return null;
-        break :blk token.loc.end;
-    };
-    _ = off;
-    _ = vm;
-    @panic("todo: testDecl");
-}
-
-// ComptimeDecl <- KEYWORD_comptime Block
-fn ComptimeDecl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
-    const off = blk: {
-        const token = lex(src, start);
-        if (token.tag != .keyword_comptime) return null;
-        break :blk token.loc.end;
-    };
-    return Block(src, off, vm);
+    return try Decl(src, off, vm);
 }
 
 // Decl
