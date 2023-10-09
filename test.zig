@@ -1,5 +1,6 @@
 const std = @import("std");
 const Vm = @import("vm.zig").Vm;
+const Container = @import("vm.zig").Container;
 const interp = @import("interp.zig");
 
 pub fn main() !void {
@@ -294,24 +295,28 @@ fn testBlockError(src: [:0]const u8, expected_error: []const u8) !void {
 fn testMain(src: [:0]const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){ };
     defer switch (gpa.deinit()) { .ok => {}, .leak => @panic("leak!") };
-    var vm = Vm{
-        .src = src,
-        .allocator = gpa.allocator()
+    //var vm = Vm{
+    //    .src = src,
+    //    .allocator = gpa.allocator()
+    //};
+    //defer vm.deinit();
+    var container = Container{
+        .allocator = gpa.allocator(),
     };
-    defer vm.deinit();
+    defer container.deinit();
 
     var off: usize = 0;
     while (true) {
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         // TODO: don't pass in VM
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        if (interp.ContainerDeclaration(src, off, &vm)) |decl_end_opt| {
+        if (interp.ContainerDeclaration(src, off, &container)) |decl_end_opt| {
             off = decl_end_opt orelse break;
         } else |vm_err| switch (vm_err) {
             error.Vm => {
-                const err = vm.err orelse @panic("vm reported error but has none?");
-                const error_msg = err.getTestMsg();
-                std.log.err("src '{s}' had unexpected error: {s}", .{src, error_msg});
+                //const err = vm.err orelse @panic("vm reported error but has none?");
+                //const error_msg = err.getTestMsg();
+                //std.log.err("src '{s}' had unexpected error: {s}", .{src, error_msg});
                 return error.TestUnexpectedResult;
             },
         }

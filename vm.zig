@@ -65,19 +65,104 @@ const Scope = struct {
     }
 };
 
-pub const Vm = struct {
+pub const Container = struct {
     src: [:0]const u8,
     allocator: std.mem.Allocator,
-    stack: std.ArrayListUnmanaged(IndirectValue) = .{},
     err: ?VmError = null,
+    map: std.StringHashMapUnmanaged(ScopeEntry) = .{},
     current_function: ?Function = null,
-    scope_stack: std.ArrayListUnmanaged(Scope) = .{},
 
     const Function = struct {
         id: ?std.zig.Token.Loc,
         params: std.ArrayListUnmanaged(std.zig.Token.Loc) = .{},
         params_done: bool = false,
     };
+
+    pub fn deinit(self: *Container) void {
+        if (self.err) |err| {
+            err.deinit(self.allocator);
+        }
+        if (self.current_function) |*f| {
+            f.params.deinit(self.allocator);
+        }
+        {
+            var it = self.map.iterator();
+            while (it.next()) |pair| {
+                pair.value_ptr.value.deinit(self.allocator);
+            }
+        }
+        self.map.deinit(self.allocator);
+    }
+    pub fn functionProtoStart(self: *Container, id: ?std.zig.Token.Loc) void {
+        if (self.current_function) |_|
+            @panic("function proto inside function proto not implemented");
+        self.current_function = .{ .id = id };
+    }
+    pub fn functionProtoEndParams(self: *Container) void {
+        const f = &(self.current_function orelse @panic("codebug"));
+        if (f.params_done) @panic("codebug");
+        f.params_done = true;
+    }
+    pub fn functionProtoParam(self: *Container, id: std.zig.Token.Loc) void {
+        const f = &(self.current_function orelse @panic("codebug"));
+        if (f.params_done) @panic("codebug");
+        f.params.append(self.allocator, id) catch |e| oom(e);
+    }
+
+    pub fn functionProtoNoBody(self: *Container) error{Vm}!void {
+        const f = &(self.current_function orelse @panic("codebug"));
+        if (!f.params_done) @panic("codebug");
+
+        const id = f.id orelse return "missing function name";
+
+        const slice = self.src[id.start .. id.end];
+        if (self.scopeLookup(slice)) |_| return self.tokenError(id_loc.start, .redeclaration);
+        if (self.scope_stack.items.len == 0) @panic("todo: assign var in global scope");
+        const scope = &self.scope_stack.items[self.scope_stack.items.len-1];
+        const value = (self.stack.popOrNull() orelse @panic("codebug")).resolve(self.*);
+        scope.map.putNoClobber(self.allocator, slice, .{
+            .mutability = mutability,
+            .value = value,
+        }) catch |e| oom(e);
+
+
+        !!!
+
+        self.stack.append(self.allocator, .{ .direct = .{ .function = .{
+            .id = f.id,
+            .params = f.params.toOwnedSlice(self.allocator) catch |e| oom(e),
+            .body = false,
+        }}}) catch |e| oom(e);
+        self.current_function = null;
+    }
+    pub fn functionProtoBodyStart(self: *Container) void {
+        const f = &(self.current_function orelse @panic("codebug"));
+        if (!f.params_done) @panic("codebug");
+        self.stack.append(self.allocator, .{ .direct = .{ .function = .{
+            .id = f.id,
+            .params = f.params.toOwnedSlice(self.allocator) catch |e| oom(e),
+            .body = true,
+        }}}) catch |e| oom(e);
+        self.current_function = null;
+    }
+    pub fn functionProtoBodyFailedParse(self: *Container) void {
+        if (self.stack.items.len == 0) @panic("codebug");
+        const f = self.stack.pop().resolve(self.*);
+        std.debug.assert(f == .function);
+    }
+    pub fn functionProtoBodyEnd(self: *Container) void {
+        // TODO: set the last block parsed to the function
+        _ = self;
+    }
+
+};
+
+pub const Vm = struct {
+    src: [:0]const u8,
+    allocator: std.mem.Allocator,
+    stack: std.ArrayListUnmanaged(IndirectValue) = .{},
+    err: ?VmError = null,
+    scope_stack: std.ArrayListUnmanaged(Scope) = .{},
 
     pub fn deinit(self: *Vm) void {
         if (self.err) |err| {
@@ -87,9 +172,6 @@ pub const Vm = struct {
             item.deinit(self.allocator);
         }
         self.stack.deinit(self.allocator);
-        if (self.current_function) |*f| {
-            f.params.deinit(self.allocator);
-        }
         for (self.scope_stack.items) |*item| {
             item.deinit(self.allocator);
         }
@@ -236,52 +318,6 @@ pub const Vm = struct {
             .scope_index = lookup.scope_index,
             .id = loc,
         }}) catch |e| oom(e);
-    }
-
-    pub fn functionProtoStart(self: *Vm, id: ?std.zig.Token.Loc) void {
-        if (self.current_function) |_|
-            @panic("function proto inside function proto not implemented");
-        self.current_function = .{ .id = id };
-    }
-    pub fn functionProtoEndParams(self: *Vm) void {
-        const f = &(self.current_function orelse @panic("codebug"));
-        if (f.params_done) @panic("codebug");
-        f.params_done = true;
-    }
-    pub fn functionProtoParam(self: *Vm, id: std.zig.Token.Loc) void {
-        const f = &(self.current_function orelse @panic("codebug"));
-        if (f.params_done) @panic("codebug");
-        f.params.append(self.allocator, id) catch |e| oom(e);
-    }
-
-    pub fn functionProtoNoBody(self: *Vm) void {
-        const f = &(self.current_function orelse @panic("codebug"));
-        if (!f.params_done) @panic("codebug");
-        self.stack.append(self.allocator, .{ .direct = .{ .function = .{
-            .id = f.id,
-            .params = f.params.toOwnedSlice(self.allocator) catch |e| oom(e),
-            .body = false,
-        }}}) catch |e| oom(e);
-        self.current_function = null;
-    }
-    pub fn functionProtoBodyStart(self: *Vm) void {
-        const f = &(self.current_function orelse @panic("codebug"));
-        if (!f.params_done) @panic("codebug");
-        self.stack.append(self.allocator, .{ .direct = .{ .function = .{
-            .id = f.id,
-            .params = f.params.toOwnedSlice(self.allocator) catch |e| oom(e),
-            .body = true,
-        }}}) catch |e| oom(e);
-        self.current_function = null;
-    }
-    pub fn functionProtoBodyFailedParse(self: *Vm) void {
-        if (self.stack.items.len == 0) @panic("codebug");
-        const f = self.stack.pop().resolve(self.*);
-        std.debug.assert(f == .function);
-    }
-    pub fn functionProtoBodyEnd(self: *Vm) void {
-        // TODO: set the last block parsed to the function
-        _ = self;
     }
 
     fn enforceArgCount(self: *Vm, loc: usize, count: usize) error{Vm}!void {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const zigscript = @import("zigscript.zig");
 const Vm = zigscript.vm.Vm;
+const Container = zigscript.vm.Container;
 
 fn applyPrefixOps(src: [:0]const u8, start: usize, op_count: u16, vm: *Vm) error{Vm}!void {
     var off = start;
@@ -33,25 +34,19 @@ pub fn lex(src: [:0]const u8, off: usize) std.zig.Token {
 //
 // For now ZigScript does not plan to support test blocks, comptime blocks nor doc comments.
 // TODO: maybe we should also not support pub for now?  Just assume everything is pub?
-pub fn ContainerDeclaration(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
-    var off = start;
+pub fn ContainerDeclaration(src: [:0]const u8, start: usize, container: *Container) error{Vm}!?usize {
     var token = lex(src, start);
-
-    var is_pub = false;
     if (token.tag == .keyword_pub) {
-        is_pub = true;
-        off = token.loc.end;
-        token = lex(src, off);
+        @panic("note: zigscript currently doesn't support the pub keyword");
     }
-
-    return try Decl(src, off, vm);
+    return try Decl(src, start, container);
 }
 
 // Decl
 //     <- (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / (KEYWORD_inline / KEYWORD_noinline))? FnProto (SEMICOLON / Block)
 //      / (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? GlobalVarDecl
 //      / KEYWORD_usingnamespace Expr SEMICOLON
-fn Decl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
+fn Decl(src: [:0]const u8, start: usize, container: *Container) error{Vm}!?usize {
     const first_token = lex(src, start);
 
     if (first_token.tag == .keyword_export)
@@ -62,18 +57,18 @@ fn Decl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
         @panic("todo");
     if (first_token.tag == .keyword_noinline)
         @panic("todo");
-    if (try FnProto(src, start, vm)) |fn_proto_end| {
+    if (try FnProto(src, start, container)) |fn_proto_end| {
         const token = lex(src, fn_proto_end);
         if (token.tag == .semicolon) {
-            vm.functionProtoNoBody();
+            container.functionProtoNoBody();
             return token.loc.end;
         }
-        vm.functionProtoBodyStart();
-        const block_end = try Block(src, fn_proto_end, vm) orelse {
-            vm.functionProtoBodyFailedParse();
+        container.functionProtoBodyStart();
+        const block_end = try Block(src, fn_proto_end, null) orelse {
+            container.functionProtoBodyFailedParse();
             return null;
         };
-        vm.functionProtoBodyEnd();
+        container.functionProtoBodyEnd();
         return block_end;
     }
 
@@ -94,7 +89,7 @@ fn Decl(src: [:0]const u8, start: usize, vm: *Vm) error{Vm}!?usize {
 // FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN
 //
 // Removed return type modifiers and TypeExpr (ZigScript not doing types for now)
-fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
+fn FnProto(src: [:0]const u8, start: usize, container: *Container) error{Vm}!?usize {
     const after_fn = blk: {
         const token = lex(src, start);
         if (token.tag != .keyword_fn) return null;
@@ -126,12 +121,13 @@ fn FnProto(src: [:0]const u8, start: usize, vm_opt: ?*Vm) error{Vm}!?usize {
         break :blk token.loc.end;
     };
 
-    if (vm_opt) |vm| {
-        vm.functionProtoStart(if (id) |i| i.loc else null);
-        const params_end2 = try ParamDeclList(src, params.start, vm);
-        std.debug.assert(params.end == params_end2);
-        vm.functionProtoEndParams();
-    }
+    _ = container;
+//    if (vm_opt) |vm| {
+//        container.functionProtoStart(if (id) |i| i.loc else null);
+//        const params_end2 = try ParamDeclList(src, params.start, vm);
+//        std.debug.assert(params.end == params_end2);
+//        container.functionProtoEndParams();
+//    }
 
     return end;
 }
